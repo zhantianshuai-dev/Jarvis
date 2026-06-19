@@ -1,0 +1,60 @@
+# macOS / IDE
+.DS_Store
+.idea/
+*.iml
+
+# Java / Maven
+target/
+*.class
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.local
+**/application-local.yaml
+**/application-local.yml
+**/application-dev.yaml
+**/application-dev.yml
+**/application-secret.yaml
+**/application-secret.yml
+
+# Runtime data
+data/
+sessions/
+**/workspace/*
+!workspace/
+!workspace/skills/
+!workspace/skills/*/
+workspace/skills/*/*
+!workspace/skills/*/SKILL.md
+workspace/skills/hatch-pet/
+resume/
+resume/*.log
+*.log
+
+# Local planning and agent notes
+AGENTS.md
+CLAUDE.md
+DESIGN.md
+**/CLAUDE.md
+**/HELP.md
+**/GITPLAN.md
+**/IMPLEMENTATION_PLAN.md
+**/PHASE*_COMPLETION_REPORT.md
+**/*COMPLETION_REPORT.md
+**/*PLAN.md
+**/*REPORT.md
+**/imageGen.md
+
+# Generated caches
+.mvn/timing.properties
+
+# Local reference projects
+/Open*/
