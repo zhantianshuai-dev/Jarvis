@@ -1,11 +1,24 @@
 package com.zhan.jarvis.agent;
 
-import com.zhan.jarvis.config.JarvisConfig;
 import com.zhan.jarvis.bus.InboundMessage;
 import com.zhan.jarvis.channel.SessionKey;
+import com.zhan.jarvis.config.JarvisConfig;
 import com.zhan.jarvis.hook.HookContext;
 import com.zhan.jarvis.hook.HookManager;
-import com.zhan.jarvis.llm.*;
+import com.zhan.jarvis.agent.loop.LoopObserver;
+import com.zhan.jarvis.agent.loop.LoopOutcome;
+import com.zhan.jarvis.agent.loop.LoopState;
+import com.zhan.jarvis.agent.loop.PendingConfirmation;
+import com.zhan.jarvis.agent.loop.SseLoopObserver;
+import com.zhan.jarvis.agent.loop.ToolCallBuilder;
+import com.zhan.jarvis.agent.loop.ToolResult;
+import com.zhan.jarvis.llm.AgentLLMProvider;
+import com.zhan.jarvis.llm.ChatResponse;
+import com.zhan.jarvis.llm.Message;
+import com.zhan.jarvis.llm.ToolCall;
+import com.zhan.jarvis.permission.AgentCheckpoint;
+import com.zhan.jarvis.permission.AgentCheckpointStore;
+import com.zhan.jarvis.permission.PendingToolPermission;
 import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.tool.ToolContext;
@@ -17,17 +30,18 @@ import reactor.core.publisher.FluxSink;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Agent 核心循环 — LLM ↔ Tool 往返直到任务完成或达到最大迭代次数。
- * <p>
- * 对标 Python VikingBot AgentLoop._run_agent_loop()。
  */
 public class AgentLoop {
 
@@ -40,17 +54,26 @@ public class AgentLoop {
     private final SessionManager sessionManager;
     private final ObjectMapper objectMapper;
     private final HookManager hookManager;
+    private final AgentCheckpointStore checkpointStore;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
-                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
-                      SessionManager sessionManager, ObjectMapper objectMapper) {
-        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper, null);
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper, null, null);
     }
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
-                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
-                      SessionManager sessionManager, ObjectMapper objectMapper,
-                      HookManager hookManager) {
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore) {
         this.agentConfig = agentConfig;
         this.llmProvider = llmProvider;
         this.toolRegistry = toolRegistry;
@@ -58,16 +81,9 @@ public class AgentLoop {
         this.sessionManager = sessionManager;
         this.objectMapper = objectMapper;
         this.hookManager = hookManager;
+        this.checkpointStore = checkpointStore;
     }
 
-    /**
-     * 处理一条用户消息，返回最终回复。
-     *
-     * @param sessionId 会话 ID
-     * @param userMessage 用户消息文本
-     * @param userId 用户标识
-     * @return 最终回复文本
-     */
     public String run(String sessionId, String userMessage, String userId) {
         return run(new SessionKey("http", "default", sessionId), sessionId, userMessage, userId);
     }
@@ -81,132 +97,86 @@ public class AgentLoop {
         return runInternal(sessionKey, sessionId, userMessage, userId, Map.of());
     }
 
+    /**
+     * 人工确认工具执行后恢复原中断点。
+     * 如果 checkpoint 已过期，则退回到一条 continuation message，保证用户能看到工具执行结果。
+     */
+    public String continueAfterToolConfirmation(PendingToolPermission pending, String toolResult,
+                                                String confirmedBy) {
+        String sessionId = hasText(pending.sessionId()) ? pending.sessionId() : "tool-confirm:" + pending.confirmId();
+        String userId = hasText(pending.requestedBy()) ? pending.requestedBy() : confirmedBy;
+        SessionKey sessionKey = pending.sessionKey() != null
+                ? pending.sessionKey()
+                : new SessionKey("http", "tool-confirm", sessionId);
+
+        sessionManager.addMessage(sessionId, "tool", toolResult, Map.of(
+                "source", "Jarvis",
+                "trace", true,
+                "trace_type", "confirmed_tool_result",
+                "confirm_id", pending.confirmId(),
+                "tool_name", pending.toolName(),
+                "arguments", pending.arguments(),
+                "confirmed_by", confirmedBy != null ? confirmedBy : ""
+        ));
+
+        AgentCheckpoint checkpoint = checkpointStore != null
+                ? checkpointStore.take(pending.confirmId()).orElse(null)
+                : null;
+        if (checkpoint != null) {
+            return resumeFromCheckpoint(checkpoint, toolResult, confirmedBy).reply();
+        }
+
+        var metadata = new LinkedHashMap<String, Object>(pending.metadata() == null ? Map.of() : pending.metadata());
+        metadata.put("confirmed_by", confirmedBy != null ? confirmedBy : "");
+        metadata.put("confirm_id", pending.confirmId());
+        metadata.put("confirmed_tool_name", pending.toolName());
+
+        String continuationMessage = """
+                用户已经人工确认并执行了此前暂停的工具操作。
+
+                工具: %s
+                摘要: %s
+                confirm_id: %s
+
+                工具执行结果:
+                %s
+
+                请基于这个已确认的工具执行结果继续完成用户原本的任务。
+                如果任务已经完成，请直接给用户一个清晰的结果总结；如果还需要其他操作，可以继续调用工具。
+                """.formatted(
+                pending.toolName(),
+                pending.summary() != null ? pending.summary() : "",
+                pending.confirmId(),
+                toolResult != null ? toolResult : ""
+        ).strip();
+
+        triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
+                "message", continuationMessage,
+                "workspace", agentConfig.workspace(),
+                "continuation", true
+        ));
+        var session = sessionManager.getOrCreate(sessionId, userId);
+        var messages = contextBuilder.build(session, continuationMessage, 20);
+        return runLoop(new LoopState(sessionKey, sessionId, userId, metadata, messages, 0, false,
+                Map.of("continuation", true)), LoopObserver.NOOP).reply();
+    }
+
     private String runInternal(SessionKey sessionKey, String sessionId, String userMessage,
                                String userId, Map<String, Object> metadata) {
         var session = sessionManager.getOrCreate(sessionId, userId);
-        //这里触发了agent事件
         triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
                 "message", userMessage,
                 "workspace", agentConfig.workspace()
         ));
 
-        // 构建初始消息列表，list
         var messages = contextBuilder.build(session, userMessage, 20);
         sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
                 "source", "Jarvis",
                 "user_id", userId != null ? userId : ""
         ));
 
-        // Agent 循环
-        int iteration = 0;
-        while (iteration < agentConfig.maxIterations()) {
-            iteration++;
-            log.info("[AgentLoop] 第 {}/{} 轮迭代", iteration, agentConfig.maxIterations());
-
-            //tool中包含inputSchema，也就是输入格式
-            var tools = toolRegistry.listTools();
-            // 1. 调用 LLM
-            ChatResponse response = llmProvider.chat(messages, tools);
-            log.info("[AgentLoop] LLM 响应: finishReason={}, content长度={}, toolCalls={}",
-                    response.finishReason(),
-                    response.content() != null ? response.content().length() : 0,
-                    response.hasToolCalls() ? response.toolCalls().size() : 0);
-
-            // 2. 有工具调用 → 执行工具
-            if (response.hasToolCalls()) {
-                // 打印工具调用信息
-                for (var tc : response.toolCalls()) {
-                    log.info("[AgentLoop] 第{}轮工具调用: {}({})", iteration, tc.name(), tc.arguments());
-                }
-
-                // 记录 assistant 的工具调用消息
-                messages.add(Message.assistant(response.toolCalls(), response.reasoningContent()));
-                //调用memory-service去存储对话历史
-                sessionManager.addMessage(sessionId, "assistant",
-                        response.reasoningContent() != null ? response.reasoningContent() : "",
-                        toolCallsMetadata(iteration, response.toolCalls()));
-
-                // 并行执行所有工具
-                var toolResults = executeToolsInParallel(response.toolCalls(), sessionKey, sessionId,
-                        userId, metadata);
-
-                // 打印工具执行结果
-                for (int i = 0; i < toolResults.size(); i++) {
-                    var tr = toolResults.get(i);
-                    String preview = tr.result.length() > 200 ? tr.result.substring(0, 200) + "..." : tr.result;
-                    log.info("[AgentLoop] 工具结果 {}: {}", tr.toolCallId, preview);
-                }
-
-                // 添加工具结果消息
-                for (var result : toolResults) {
-                    messages.add(Message.tool(result.toolCallId, result.result));
-                    sessionManager.addMessage(sessionId, "tool", result.result,
-                            toolResultMetadata(iteration, result));
-                }
-
-                String confirmationReply = pendingConfirmationReply(toolResults);
-                if (confirmationReply != null) {
-                    sessionManager.addMessage(sessionId, "assistant", confirmationReply, Map.of(
-                            "source", "Jarvis",
-                            "final", true,
-                            "iteration", iteration,
-                            "requires_confirmation", true
-                    ));
-                    triggerHook(HookManager.AGENT_POST_PROCESS, sessionId, userId, Map.of(
-                            "reply", confirmationReply,
-                            "iteration", iteration,
-                            "finish_reason", "requires_confirmation",
-                            "max_iterations_reached", false
-                    ));
-                    return confirmationReply;
-                }
-
-                // 注入反思提示
-                messages.add(Message.system(
-                        "请反思以上工具执行结果。如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
-                ));
-
-                log.info("[AgentLoop] 执行了 {} 个工具调用，继续循环", toolResults.size());
-                continue;
-            }
-
-            // 3. 无工具调用 → 最终回复
-            String finalReply = response.content() != null ? response.content() : "（无回复内容）";
-
-            // 保存到 memory-service JSONL
-            sessionManager.addMessage(sessionId, "assistant", finalReply, Map.of(
-                    "source", "Jarvis",
-                    "final", true,
-                    "iteration", iteration,
-                    "finish_reason", response.finishReason() != null ? response.finishReason() : ""
-            ));
-            //这里也触发了agent执行后的事件
-            triggerHook(HookManager.AGENT_POST_PROCESS, sessionId, userId, Map.of(
-                    "reply", finalReply,
-                    "iteration", iteration,
-                    "finish_reason", response.finishReason() != null ? response.finishReason() : "",
-                    "max_iterations_reached", false
-            ));
-
-            log.info("[AgentLoop] 任务完成，共 {} 轮迭代", iteration);
-            return finalReply;
-        }
-
-        // 达到最大迭代次数
-        String fallback = "达到最大迭代次数（" + agentConfig.maxIterations() + "），请简化任务后重试。";
-        sessionManager.addMessage(sessionId, "assistant", fallback, Map.of(
-                "source", "Jarvis",
-                "final", true,
-                "max_iterations_reached", true
-        ));
-        //达到最大迭代次数也触发
-        triggerHook(HookManager.AGENT_POST_PROCESS, sessionId, userId, Map.of(
-                "reply", fallback,
-                "iteration", agentConfig.maxIterations(),
-                "finish_reason", "max_iterations",
-                "max_iterations_reached", true
-        ));
-        return fallback;
+        return runLoop(new LoopState(sessionKey, sessionId, userId,
+                metadata == null ? Map.of() : metadata, messages, 0, false, Map.of()), LoopObserver.NOOP).reply();
     }
 
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
@@ -218,6 +188,7 @@ public class AgentLoop {
     private void runStreamingInternal(SessionKey sessionKey, String sessionId, String userMessage,
                                       String userId, FluxSink<Map<String, Object>> sink) {
         try {
+            var observer = new SseLoopObserver(sink);
             var session = sessionManager.getOrCreate(sessionId, userId);
             emit(sink, SseEventTypes.CONNECTED, sessionId, "", "chat", Map.of());
             triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
@@ -233,136 +204,8 @@ public class AgentLoop {
                     "stream", true
             ));
 
-            int iteration = 0;
-            while (iteration < agentConfig.maxIterations()) {
-                iteration++;
-                final int currentIteration = iteration;
-                var tools = toolRegistry.listTools();
-                var content = new StringBuilder();
-                var reasoning = new StringBuilder();
-                var toolBuilders = new java.util.TreeMap<Integer, ToolCallBuilder>();
-                var finishReason = new java.util.concurrent.atomic.AtomicReference<String>();
-
-                llmProvider.streamChat(messages, tools)
-                        .doOnNext(delta -> {
-                            if (delta.done()) {
-                                return;
-                            }
-                            if (delta.content() != null && !delta.content().isEmpty()) {
-                                content.append(delta.content());
-                                emit(sink, SseEventTypes.TOKEN, sessionId, delta.content(), "chat",
-                                        Map.of("iteration", currentIteration));
-                            }
-                            if (delta.reasoningContent() != null && !delta.reasoningContent().isEmpty()) {
-                                reasoning.append(delta.reasoningContent());
-                                emit(sink, SseEventTypes.REASONING, sessionId, delta.reasoningContent(), "chat",
-                                        Map.of("iteration", currentIteration));
-                            }
-                            for (var td : delta.toolCallDeltas()) {
-                                toolBuilders.computeIfAbsent(td.index(), ignored -> new ToolCallBuilder())
-                                        .append(td);
-                            }
-                            if (delta.finishReason() != null && !delta.finishReason().isBlank()) {
-                                finishReason.set(delta.finishReason());
-                            }
-                        })
-                        .blockLast(Duration.ofMinutes(5));
-
-                var toolCalls = toolBuilders.values().stream()
-                        .map(ToolCallBuilder::build)
-                        .toList();
-
-                if (!toolCalls.isEmpty()) {
-                    messages.add(Message.assistant(toolCalls, reasoning.isEmpty() ? null : reasoning.toString()));
-                    sessionManager.addMessage(sessionId, "assistant",
-                            reasoning.isEmpty() ? "" : reasoning.toString(),
-                            toolCallsMetadata(iteration, toolCalls));
-
-                    for (var tc : toolCalls) {
-                        emit(sink, SseEventTypes.TOOL_CALL, sessionId, tc.name(), "chat", Map.of(
-                                "iteration", iteration,
-                                "tool_call_id", tc.id(),
-                                "tool_name", tc.name(),
-                                "arguments", tc.arguments()
-                        ));
-                    }
-
-                    var toolResults = executeToolsInParallel(toolCalls, sessionKey, sessionId, userId, Map.of());
-                    for (var result : toolResults) {
-                        messages.add(Message.tool(result.toolCallId, result.result));
-                        sessionManager.addMessage(sessionId, "tool", result.result,
-                                toolResultMetadata(iteration, result));
-                        emit(sink, SseEventTypes.TOOL_RESULT, sessionId, result.result, "chat", Map.of(
-                                "iteration", iteration,
-                                "tool_call_id", result.toolCallId,
-                                "tool_name", result.toolName
-                        ));
-                    }
-                    String confirmationReply = pendingConfirmationReply(toolResults);
-                    if (confirmationReply != null) {
-                        //如果不为null，说明需要确认，因此封装一下消息
-                        sessionManager.addMessage(sessionId, "assistant", confirmationReply, Map.of(
-                                "source", "Jarvis",
-                                "final", true,
-                                "stream", true,
-                                "iteration", iteration,
-                                "requires_confirmation", true
-                        ));
-                        //触发一下agent日志记录
-                        triggerHook(HookManager.AGENT_POST_PROCESS, sessionId, userId, Map.of(
-                                "reply", confirmationReply,
-                                "iteration", iteration,
-                                "finish_reason", "requires_confirmation",
-                                "max_iterations_reached", false,
-                                "stream", true
-                        ));
-                        //终止本次的SSE
-                        emit(sink, SseEventTypes.DONE, sessionId, confirmationReply, "chat", Map.of(
-                                "iteration", iteration,
-                                "finish_reason", "requires_confirmation",
-                                "requires_confirmation", true
-                        ));
-                        //调用complete停止HTTP连接
-                        sink.complete();
-                        return;
-                    }
-                    messages.add(Message.system(
-                            "请反思以上工具执行结果。如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
-                    ));
-                    continue;
-                }
-
-                String finalReply = content.isEmpty() ? "（无回复内容）" : content.toString();
-                sessionManager.addMessage(sessionId, "assistant", finalReply, Map.of(
-                        "source", "Jarvis",
-                        "final", true,
-                        "stream", true,
-                        "iteration", iteration,
-                        "finish_reason", finishReason.get() != null ? finishReason.get() : ""
-                ));
-                triggerHook(HookManager.AGENT_POST_PROCESS, sessionId, userId, Map.of(
-                        "reply", finalReply,
-                        "iteration", iteration,
-                        "finish_reason", finishReason.get() != null ? finishReason.get() : "",
-                        "max_iterations_reached", false,
-                        "stream", true
-                ));
-                emit(sink, SseEventTypes.DONE, sessionId, finalReply, "chat", Map.of(
-                        "iteration", iteration,
-                        "finish_reason", finishReason.get() != null ? finishReason.get() : ""
-                ));
-                sink.complete();
-                return;
-            }
-
-            String fallback = "达到最大迭代次数（" + agentConfig.maxIterations() + "），请简化任务后重试。";
-            sessionManager.addMessage(sessionId, "assistant", fallback, Map.of(
-                    "source", "Jarvis",
-                    "final", true,
-                    "stream", true,
-                    "max_iterations_reached", true
-            ));
-            emit(sink, SseEventTypes.ERROR, sessionId, fallback, "chat", Map.of("max_iterations_reached", true));
+            runLoop(new LoopState(sessionKey, sessionId, userId, Map.of(), messages, 0, true,
+                    Map.of("stream", true)), observer);
             sink.complete();
         } catch (Exception e) {
             log.warn("[AgentLoop] stream 执行失败: {}", e.getMessage());
@@ -372,17 +215,220 @@ public class AgentLoop {
         }
     }
 
+    private LoopOutcome resumeFromCheckpoint(AgentCheckpoint checkpoint, String confirmedToolResult,
+                                             String confirmedBy) {
+        String userId = hasText(checkpoint.userId()) ? checkpoint.userId() : confirmedBy;
+        var messages = new ArrayList<>(checkpoint.messages());
+        messages.add(Message.tool(checkpoint.pendingToolCallId(), confirmedToolResult));
+        messages.add(Message.system(
+                "用户已经人工确认并执行了暂停的工具操作。请反思以上工具执行结果。"
+                        + "如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
+        ));
+        return runLoop(new LoopState(
+                checkpoint.sessionKey(),
+                checkpoint.sessionId(),
+                userId,
+                checkpoint.metadata() == null ? Map.of() : checkpoint.metadata(),
+                messages,
+                checkpoint.iteration(),
+                false,
+                Map.of("resumed_from_checkpoint", true)
+        ), LoopObserver.NOOP);
+    }
+
     /**
-     * 并行执行所有工具调用（Virtual Threads）。
+     * 唯一的 Agent 循环实现。
+     * 普通 HTTP、SSE、人工确认恢复都通过不同 LoopState/Observer 复用这里。
      */
+    private LoopOutcome runLoop(LoopState state, LoopObserver observer) {
+        int iteration = state.startIteration();
+        while (iteration < agentConfig.maxIterations()) {
+            iteration++;
+            log.info("[AgentLoop] 第 {}/{} 轮迭代: sessionId={}, stream={}",
+                    iteration, agentConfig.maxIterations(), state.sessionId(), state.stream());
+
+            var tools = toolRegistry.listTools();
+            ChatResponse response = state.stream()
+                    ? streamChatResponse(state, tools, observer, iteration)
+                    : llmProvider.chat(state.messages(), tools);
+            log.info("[AgentLoop] LLM 响应: finishReason={}, content长度={}, toolCalls={}",
+                    response.finishReason(),
+                    response.content() != null ? response.content().length() : 0,
+                    response.hasToolCalls() ? response.toolCalls().size() : 0);
+
+            if (response.hasToolCalls()) {
+                for (var tc : response.toolCalls()) {
+                    log.info("[AgentLoop] 第{}轮工具调用: {}({})", iteration, tc.name(), tc.arguments());
+                    observer.onToolCall(state, iteration, tc);
+                }
+                //当前工具结果加入到当前上下文
+                state.messages().add(Message.assistant(response.toolCalls(), response.reasoningContent()));
+                //发送到memory-service中进行持久化，然后自动生成摘要，提取记忆
+                sessionManager.addMessage(state.sessionId(), "assistant",
+                        response.reasoningContent() != null ? response.reasoningContent() : "",
+                        toolCallsMetadata(iteration, response.toolCalls()));
+
+                var toolResults = executeToolsInParallel(response.toolCalls(), state.sessionKey(),
+                        state.sessionId(), state.userId(), state.metadata());
+                logToolResults(toolResults);
+
+                PendingConfirmation pending = findPendingConfirmation(toolResults);
+                if (pending != null) {
+                    addToolResults(state, iteration, toolResults, observer, pending);
+                    saveCheckpoint(pending, state, iteration);
+                    var outcome = finishRequiresConfirmation(state, iteration, pending.reply());
+                    observer.onDone(outcome);
+                    return outcome;
+                }
+
+                //如果不需人工确认
+                addToolResults(state, iteration, toolResults, observer, null);
+                state.messages().add(Message.system(
+                        "请反思以上工具执行结果。如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
+                ));
+                continue;
+            }
+
+            String finalReply = response.content() != null ? response.content() : "（无回复内容）";
+            var outcome = finishFinal(state, iteration, finalReply,
+                    response.finishReason() != null ? response.finishReason() : "");
+            observer.onDone(outcome);
+            return outcome;
+        }
+
+        String fallback = "达到最大迭代次数（" + agentConfig.maxIterations() + "），请简化任务后重试。";
+        var outcome = finishMaxIterations(state, fallback);
+        observer.onDone(outcome);
+        return outcome;
+    }
+
+    private ChatResponse streamChatResponse(LoopState state, List<?> tools, LoopObserver observer, int iteration) {
+        var content = new StringBuilder();
+        var reasoning = new StringBuilder();
+        var toolBuilders = new TreeMap<Integer, ToolCallBuilder>();
+        var finishReason = new AtomicReference<String>();
+
+        @SuppressWarnings("unchecked")
+        var typedTools = (List<com.zhan.jarvis.llm.ToolDefinition>) tools;
+        llmProvider.streamChat(state.messages(), typedTools)
+                .doOnNext(delta -> {
+                    if (delta.done()) {
+                        return;
+                    }
+                    if (delta.content() != null && !delta.content().isEmpty()) {
+                        content.append(delta.content());
+                        observer.onToken(state, iteration, delta.content());
+                    }
+                    if (delta.reasoningContent() != null && !delta.reasoningContent().isEmpty()) {
+                        reasoning.append(delta.reasoningContent());
+                        observer.onReasoning(state, iteration, delta.reasoningContent());
+                    }
+                    for (var td : delta.toolCallDeltas()) {
+                        toolBuilders.computeIfAbsent(td.index(), ignored -> new ToolCallBuilder()).append(td);
+                    }
+                    if (delta.finishReason() != null && !delta.finishReason().isBlank()) {
+                        finishReason.set(delta.finishReason());
+                    }
+                })
+                .blockLast(Duration.ofMinutes(5));
+
+        var toolCalls = toolBuilders.values().stream()
+                .map(ToolCallBuilder::build)
+                .toList();
+        return new ChatResponse(
+                content.toString(),
+                toolCalls,
+                finishReason.get() != null ? finishReason.get() : "",
+                new ChatResponse.TokenUsage(0, 0, 0),
+                reasoning.isEmpty() ? null : reasoning.toString()
+        );
+    }
+
+    private LoopOutcome finishRequiresConfirmation(LoopState state, int iteration, String reply) {
+        var metadata = mergedMeta(state, Map.of(
+                "source", "Jarvis",
+                "final", true,
+                "iteration", iteration,
+                "requires_confirmation", true
+        ));
+        sessionManager.addMessage(state.sessionId(), "assistant", reply, metadata);
+        triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
+                "reply", reply,
+                "iteration", iteration,
+                "finish_reason", "requires_confirmation",
+                "max_iterations_reached", false
+        )));
+        return new LoopOutcome(state.sessionId(), reply, iteration, "requires_confirmation", true, false);
+    }
+
+    private LoopOutcome finishFinal(LoopState state, int iteration, String reply, String finishReason) {
+        sessionManager.addMessage(state.sessionId(), "assistant", reply, mergedMeta(state, Map.of(
+                "source", "Jarvis",
+                "final", true,
+                "iteration", iteration,
+                "finish_reason", finishReason
+        )));
+        triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
+                "reply", reply,
+                "iteration", iteration,
+                "finish_reason", finishReason,
+                "max_iterations_reached", false
+        )));
+        log.info("[AgentLoop] 任务完成，共 {} 轮迭代", iteration);
+        return new LoopOutcome(state.sessionId(), reply, iteration, finishReason, false, false);
+    }
+
+    private LoopOutcome finishMaxIterations(LoopState state, String reply) {
+        sessionManager.addMessage(state.sessionId(), "assistant", reply, mergedMeta(state, Map.of(
+                "source", "Jarvis",
+                "final", true,
+                "max_iterations_reached", true
+        )));
+        triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
+                "reply", reply,
+                "iteration", agentConfig.maxIterations(),
+                "finish_reason", "max_iterations",
+                "max_iterations_reached", true
+        )));
+        return new LoopOutcome(state.sessionId(), reply, agentConfig.maxIterations(), "max_iterations", false, true);
+    }
+
+    private void addToolResults(LoopState state, int iteration, List<ToolResult> toolResults,
+                                LoopObserver observer, PendingConfirmation pending) {
+        for (var result : toolResults) {
+            if (pending != null && Objects.equals(result.toolCallId(), pending.result().toolCallId())) {
+                continue;
+            }
+            state.messages().add(Message.tool(result.toolCallId(), result.result()));
+            sessionManager.addMessage(state.sessionId(), "tool", result.result(),
+                    toolResultMetadata(iteration, result));
+            observer.onToolResult(state, iteration, result);
+        }
+    }
+
+    private void saveCheckpoint(PendingConfirmation pending, LoopState state, int iteration) {
+        if (checkpointStore == null || !hasText(pending.confirmId())) {
+            return;
+        }
+        checkpointStore.put(new AgentCheckpoint(
+                pending.confirmId(),
+                pending.result().toolCallId(),
+                state.sessionKey(),
+                state.sessionId(),
+                state.userId(),
+                List.copyOf(new ArrayList<>(state.messages())),
+                iteration,
+                Map.copyOf(state.metadata() == null ? Map.of() : state.metadata()),
+                pending.expiresAt()
+        ));
+    }
+
     private List<ToolResult> executeToolsInParallel(List<ToolCall> toolCalls, SessionKey sessionKey,
                                                     String sessionId, String userId,
                                                     Map<String, Object> metadata) {
         var results = new ArrayList<ToolResult>();
         var tasks = new ArrayList<Thread>();
-        // 记录每个线程对应的 tool_call_id，用于超时补结果
         var callByThread = new java.util.IdentityHashMap<Thread, ToolCall>();
-
         var ctx = new ToolContext(sessionId, sessionKey, agentConfig.workspace(), userId, metadata);
 
         for (var tc : toolCalls) {
@@ -406,19 +452,19 @@ public class AgentLoop {
             callByThread.put(thread, tc);
         }
 
-        // 等待所有线程完成（每个工具最长 60 秒）
         for (var t : tasks) {
             try {
                 t.join(Duration.ofSeconds(120).toMillis());
                 if (t.isAlive()) {
                     var tc = callByThread.get(t);
-                    String callId = tc != null ? tc.id() : "";
-                    log.warn("工具执行超时: callId={}", callId);
+                    log.warn("工具执行超时: callId={}", tc != null ? tc.id() : "");
                     synchronized (results) {
-                        results.add(new ToolResult(callId,
+                        results.add(new ToolResult(
+                                tc != null ? tc.id() : "",
                                 tc != null ? tc.name() : "",
                                 tc != null ? tc.arguments() : "{}",
-                                "工具执行超时（60秒）"));
+                                "工具执行超时（120秒）"
+                        ));
                     }
                 }
             } catch (InterruptedException e) {
@@ -426,25 +472,33 @@ public class AgentLoop {
                 log.warn("等待工具线程被中断");
             }
         }
-
         return results;
     }
 
-    private String pendingConfirmationReply(List<ToolResult> toolResults) {
+    private void logToolResults(List<ToolResult> toolResults) {
+        for (var result : toolResults) {
+            String preview = result.result().length() > 200
+                    ? result.result().substring(0, 200) + "..."
+                    : result.result();
+            log.info("[AgentLoop] 工具结果 {}: {}", result.toolCallId(), preview);
+        }
+    }
+
+    private PendingConfirmation findPendingConfirmation(List<ToolResult> toolResults) {
         for (var result : toolResults) {
             try {
-                JsonNode root = objectMapper.readTree(result.result);
+                JsonNode root = objectMapper.readTree(result.result());
                 if (root != null && root.has("requires_confirmation")
                         && root.get("requires_confirmation").asBoolean(false)) {
-                    String tool = root.path("tool").asText(result.toolName);
+                    String tool = root.path("tool").asText(result.toolName());
                     String action = root.path("action").asText("");
                     String summary = root.path("summary").asText("");
                     String confirmId = root.path("confirm_id").asText("");
-                    String message = root.path("message").asText("该 Git 操作需要人工确认。");
+                    String message = root.path("message").asText("该工具操作需要人工确认。");
                     String command = root.has("command") ? root.path("command").toString() : "";
                     String expiresAt = root.path("expires_at").asText("");
                     String endpoint = root.path("confirm_endpoint").asText("/api/v1/tools/confirm");
-                    return """
+                    String reply = """
                             工具操作需要人工确认，已暂停自动执行。
 
                             工具: %s
@@ -457,6 +511,7 @@ public class AgentLoop {
                             %s
                             确认后由后端调用 POST %s 执行，LLM 不能自行确认。
                             """.formatted(tool, action, summary, command, confirmId, expiresAt, message, endpoint).strip();
+                    return new PendingConfirmation(result, reply, confirmId, parseExpiresAt(expiresAt));
                 }
             } catch (Exception ignored) {
                 // 非 JSON 工具结果不参与确认判断。
@@ -466,14 +521,14 @@ public class AgentLoop {
     }
 
     private Map<String, Object> toolCallsMetadata(int iteration, List<ToolCall> toolCalls) {
-        var metadata = new java.util.LinkedHashMap<String, Object>();
+        var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
         metadata.put("trace_type", "assistant_tool_calls");
         metadata.put("iteration", iteration);
         metadata.put("tool_calls", toolCalls.stream()
                 .map(tc -> {
-                    var item = new java.util.LinkedHashMap<String, Object>();
+                    var item = new LinkedHashMap<String, Object>();
                     item.put("id", tc.id());
                     item.put("name", tc.name());
                     item.put("arguments", tc.arguments());
@@ -484,14 +539,22 @@ public class AgentLoop {
     }
 
     private Map<String, Object> toolResultMetadata(int iteration, ToolResult result) {
-        var metadata = new java.util.LinkedHashMap<String, Object>();
+        var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
         metadata.put("trace_type", "tool_result");
         metadata.put("iteration", iteration);
-        metadata.put("tool_call_id", result.toolCallId);
-        metadata.put("tool_name", result.toolName);
-        metadata.put("arguments", result.arguments);
+        metadata.put("tool_call_id", result.toolCallId());
+        metadata.put("tool_name", result.toolName());
+        metadata.put("arguments", result.arguments());
+        return metadata;
+    }
+
+    private Map<String, Object> mergedMeta(LoopState state, Map<String, Object> base) {
+        var metadata = new LinkedHashMap<String, Object>(base);
+        if (state.outputMetadata() != null) {
+            metadata.putAll(state.outputMetadata());
+        }
         return metadata;
     }
 
@@ -519,31 +582,19 @@ public class AgentLoop {
         sink.next(event);
     }
 
-    /** 工具执行结果 */
-    private record ToolResult(String toolCallId, String toolName, String arguments, String result) {}
-
-    private static class ToolCallBuilder {
-        private String id;
-        private final StringBuilder name = new StringBuilder();
-        private final StringBuilder arguments = new StringBuilder();
-
-        void append(ChatStreamDelta.ToolCallDelta delta) {
-            if (delta.id() != null && !delta.id().isBlank()) {
-                id = delta.id();
-            }
-            if (delta.name() != null) {
-                name.append(delta.name());
-            }
-            if (delta.arguments() != null) {
-                arguments.append(delta.arguments());
+    private static Instant parseExpiresAt(String value) {
+        if (hasText(value)) {
+            try {
+                return Instant.parse(value);
+            } catch (Exception ignored) {
+                // fallback below
             }
         }
-
-        ToolCall build() {
-            String safeId = id != null && !id.isBlank()
-                    ? id
-                    : "call_" + cn.hutool.core.util.IdUtil.getSnowflake(1, 1).nextId();
-            return new ToolCall(safeId, name.toString(), arguments.toString());
-        }
+        return Instant.now().plus(Duration.ofMinutes(10));
     }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
 }

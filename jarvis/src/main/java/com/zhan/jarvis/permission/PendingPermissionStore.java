@@ -17,6 +17,7 @@ public class PendingPermissionStore {
 
     public void put(PendingToolPermission permission) {
         cleanupExpired();
+        //存储形式 key： confirmId ，value： permission
         permissions.put(permission.confirmId(), permission);
     }
 

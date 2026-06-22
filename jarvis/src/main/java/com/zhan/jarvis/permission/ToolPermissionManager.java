@@ -93,6 +93,7 @@ public class ToolPermissionManager {
         return ToolPermissionDecision.ask(payload);
     }
 
+    //这里校验human_confirmed=true，如果不为true，就返回false
     private static boolean isHumanConfirmed(ToolContext ctx) {
         Map<String, Object> metadata = ctx.metadata();
         if (metadata == null) {

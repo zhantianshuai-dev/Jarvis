@@ -569,6 +569,7 @@ export default function App() {
     );
     try {
       const result = await confirmTool(session.token, { confirmId });
+      const reply = typeof result?.reply === 'string' ? result.reply.trim() : '';
       const resultText = formatConfirmResult(result);
       setMessages((current) =>
         current
@@ -580,7 +581,7 @@ export default function App() {
           .concat({
             id: createClientId(),
             role: 'assistant',
-            content: `工具确认操作已执行。\n\n\`\`\`json\n${resultText}\n\`\`\``,
+            content: reply || `工具确认操作已执行。\n\n\`\`\`json\n${resultText}\n\`\`\``,
           }),
       );
     } catch (err) {

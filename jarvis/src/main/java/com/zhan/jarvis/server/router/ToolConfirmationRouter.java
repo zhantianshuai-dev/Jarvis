@@ -1,5 +1,6 @@
 package com.zhan.jarvis.server.router;
 
+import com.zhan.jarvis.agent.AgentLoop;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.config.JarvisConfig;
@@ -33,12 +34,14 @@ public class ToolConfirmationRouter {
 
     private final ToolRegistry toolRegistry;
     private final ToolPermissionManager permissionManager;
+    private final AgentLoop agentLoop;
     private final JarvisConfig config;
 
     public ToolConfirmationRouter(ToolRegistry toolRegistry, ToolPermissionManager permissionManager,
-                                  JarvisConfig config) {
+                                  AgentLoop agentLoop, JarvisConfig config) {
         this.toolRegistry = toolRegistry;
         this.permissionManager = permissionManager;
+        this.agentLoop = agentLoop;
         this.config = config;
     }
 
@@ -94,13 +97,17 @@ public class ToolConfirmationRouter {
                 userId,
                 metadata
         );
+        //执行工具，获取工具结果
         String result = toolRegistry.executeTool(pending.toolName(), pending.arguments(), ctx);
+        // 将工具结果回填到agentLoop中
+        String reply = agentLoop.continueAfterToolConfirmation(pending, result, userId);
         return Map.of(
                 "success", true,
                 "confirm_id", confirmId,
                 "tool", pending.toolName(),
                 "summary", pending.summary(),
-                "result", result
+                "result", result,
+                "reply", reply
         );
     }
 

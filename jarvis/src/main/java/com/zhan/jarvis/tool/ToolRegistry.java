@@ -101,10 +101,12 @@ public class ToolRegistry {
 
         long start = System.currentTimeMillis();
         try {
+            //这里触发人工确认校验
             ToolPermissionDecision decision = evaluatePermission(name, arguments, ctx);
             if (decision.behavior() == ToolPermissionDecision.Behavior.DENY) {
                 throw new HookDecisionException("Tool permission denied: " + decision.reason());
             }
+            //这里检查到需要ASK用户，直接返回给AgentLoop
             if (decision.behavior() == ToolPermissionDecision.Behavior.ASK) {
                 String result = toJson(decision.payload());
                 triggerHook(HookManager.TOOL_POST_CALL, ctx, Map.of(

@@ -19,6 +19,7 @@ import com.zhan.jarvis.llm.AgentLLMProvider;
 import com.zhan.jarvis.llm.OpenAiAgentLLMProvider;
 import com.zhan.jarvis.memory.MemoryServiceClient;
 import com.zhan.jarvis.permission.ToolPermissionManager;
+import com.zhan.jarvis.permission.AgentCheckpointStore;
 import com.zhan.jarvis.sandbox.DirectBackend;
 import com.zhan.jarvis.sandbox.SandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxManager;
@@ -224,10 +225,10 @@ public class AppConfig {
     public AgentLoop agentLoop(JarvisConfig config, AgentLLMProvider llmProvider,
                                 ToolRegistry toolRegistry, ContextBuilder contextBuilder,
                                 SessionManager sessionManager, ObjectMapper objectMapper,
-                                HookManager hookManager) {
+                                HookManager hookManager, AgentCheckpointStore checkpointStore) {
         log.info("创建 AgentLoop: maxIterations={}", config.agent().maxIterations());
         return new AgentLoop(config.agent(), llmProvider, toolRegistry, contextBuilder,
-                sessionManager, objectMapper, hookManager);
+                sessionManager, objectMapper, hookManager, checkpointStore);
     }
 
     // ---- 2.6 MessageBus 解耦 ----
