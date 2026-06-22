@@ -10,10 +10,11 @@ public record ChatStreamDelta(
         String reasoningContent,
         List<ToolCallDelta> toolCallDeltas,
         String finishReason,
+        ChatResponse.TokenUsage usage,
         boolean done
 ) {
     public static ChatStreamDelta doneEvent() {
-        return new ChatStreamDelta(null, null, List.of(), null, true);
+        return new ChatStreamDelta(null, null, List.of(), null, null, true);
     }
 
     public record ToolCallDelta(

@@ -11,6 +11,7 @@ public record MemoryServiceConfig(
     EmbeddingConfig embedding,
     RerankConfig rerank,
     RetrievalConfig retrieval,
+    MemoryConfig memory,
     SessionWorkspaceConfig session
 ) {
 
@@ -44,6 +45,36 @@ public record MemoryServiceConfig(
         String model,
         int dimension
     ) {}
+
+    /**
+     * 长期记忆提取和去重配置。
+     */
+    public record MemoryConfig(
+        DedupConfig dedup
+    ) {
+        public DedupConfig dedup() {
+            return dedup != null ? dedup : new DedupConfig(10, 0.75);
+        }
+    }
+
+    /**
+     * 候选记忆去重配置。
+     * topK 控制向量召回数量，similarityThreshold 控制进入 LLM 判断的最低相似度。
+     */
+    public record DedupConfig(
+        int topK,
+        double similarityThreshold
+    ) {
+        public int safeTopK() {
+            return topK > 0 ? topK : 10;
+        }
+
+        public double safeSimilarityThreshold() {
+            if (similarityThreshold < 0) return 0;
+            if (similarityThreshold > 1) return 1;
+            return similarityThreshold;
+        }
+    }
 
     /**
      * Rerank 重排序配置（可选）。

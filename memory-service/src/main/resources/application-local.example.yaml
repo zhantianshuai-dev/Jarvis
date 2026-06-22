@@ -22,3 +22,8 @@ memory-service:
     api-key: ${RERANK_API_KEY:}
     api-base: ${RERANK_API_BASE:https://dashscope.aliyuncs.com/compatible-api/v1}
     model: ${RERANK_MODEL:qwen3-rerank}
+
+  memory:
+    dedup:
+      top-k: ${MEMORY_DEDUP_TOP_K:10}
+      similarity-threshold: ${MEMORY_DEDUP_SIMILARITY_THRESHOLD:0.75}

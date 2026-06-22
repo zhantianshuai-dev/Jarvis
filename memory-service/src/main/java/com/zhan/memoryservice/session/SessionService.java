@@ -125,6 +125,7 @@ public class SessionService {
         List<Message> toArchive;
         List<String> archiveIds;
 
+        //归档历史对话
         if (keep > 0 && allMessages.size() > keep) {
             int splitIdx = allMessages.size() - keep;
             toArchive = allMessages.subList(0, splitIdx);

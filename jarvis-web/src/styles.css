@@ -928,6 +928,21 @@ button {
   font-weight: 600;
 }
 
+.token-usage-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: #8a8a8a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.token-usage-line span:first-child {
+  color: #6f6f6f;
+  font-weight: 500;
+}
+
 .tool-confirm-panel {
   display: grid;
   gap: 10px;

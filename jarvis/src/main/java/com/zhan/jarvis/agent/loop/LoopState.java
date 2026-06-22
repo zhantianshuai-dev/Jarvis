@@ -17,6 +17,7 @@ public record LoopState(
         List<Message> messages,
         int startIteration,
         boolean stream,
-        Map<String, Object> outputMetadata
+        Map<String, Object> outputMetadata,
+        TokenUsageAccumulator tokenUsage
 ) {
 }

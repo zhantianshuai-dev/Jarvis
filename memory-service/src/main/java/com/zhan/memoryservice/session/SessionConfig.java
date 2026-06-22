@@ -36,9 +36,14 @@ public class SessionConfig {
     @Bean
     public MemoryDeduplicator memoryDeduplicator(VectorStore vectorStore, MetadataStore metadata,
                                                    EmbeddingProvider embedder, LLMProvider llm,
-                                                   PromptManager prompts) {
-        log.info("MemoryDeduplicator 初始化");
-        return new MemoryDeduplicator(vectorStore, metadata, embedder, llm, prompts);
+                                                   PromptManager prompts, MemoryServiceConfig config) {
+        var memory = config.memory() != null
+                ? config.memory()
+                : new MemoryServiceConfig.MemoryConfig(null);
+        var dedup = memory.dedup();
+        log.info("MemoryDeduplicator 初始化: topK={}, similarityThreshold={}",
+                dedup.safeTopK(), dedup.safeSimilarityThreshold());
+        return new MemoryDeduplicator(vectorStore, metadata, embedder, llm, prompts, dedup);
     }
 
     @Bean

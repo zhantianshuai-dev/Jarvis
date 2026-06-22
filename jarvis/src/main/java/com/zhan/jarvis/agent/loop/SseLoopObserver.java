@@ -54,7 +54,8 @@ public class SseLoopObserver implements LoopObserver {
                 "iteration", outcome.iteration(),
                 "finish_reason", outcome.finishReason(),
                 "requires_confirmation", outcome.requiresConfirmation(),
-                "max_iterations_reached", outcome.maxIterationsReached()
+                "max_iterations_reached", outcome.maxIterationsReached(),
+                "token_usage", outcome.tokenUsage()
         ));
     }
 

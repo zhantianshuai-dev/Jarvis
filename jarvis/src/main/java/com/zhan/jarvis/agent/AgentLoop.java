@@ -12,6 +12,7 @@ import com.zhan.jarvis.agent.loop.PendingConfirmation;
 import com.zhan.jarvis.agent.loop.SseLoopObserver;
 import com.zhan.jarvis.agent.loop.ToolCallBuilder;
 import com.zhan.jarvis.agent.loop.ToolResult;
+import com.zhan.jarvis.agent.loop.TokenUsageAccumulator;
 import com.zhan.jarvis.llm.AgentLLMProvider;
 import com.zhan.jarvis.llm.ChatResponse;
 import com.zhan.jarvis.llm.Message;
@@ -119,6 +120,7 @@ public class AgentLoop {
                 "confirmed_by", confirmedBy != null ? confirmedBy : ""
         ));
 
+        //这个位置去取checkpoint
         AgentCheckpoint checkpoint = checkpointStore != null
                 ? checkpointStore.take(pending.confirmId()).orElse(null)
                 : null;
@@ -158,7 +160,7 @@ public class AgentLoop {
         var session = sessionManager.getOrCreate(sessionId, userId);
         var messages = contextBuilder.build(session, continuationMessage, 20);
         return runLoop(new LoopState(sessionKey, sessionId, userId, metadata, messages, 0, false,
-                Map.of("continuation", true)), LoopObserver.NOOP).reply();
+                Map.of("continuation", true), new TokenUsageAccumulator()), LoopObserver.NOOP).reply();
     }
 
     private String runInternal(SessionKey sessionKey, String sessionId, String userMessage,
@@ -176,7 +178,8 @@ public class AgentLoop {
         ));
 
         return runLoop(new LoopState(sessionKey, sessionId, userId,
-                metadata == null ? Map.of() : metadata, messages, 0, false, Map.of()), LoopObserver.NOOP).reply();
+                metadata == null ? Map.of() : metadata, messages, 0, false, Map.of(),
+                new TokenUsageAccumulator()), LoopObserver.NOOP).reply();
     }
 
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
@@ -205,7 +208,7 @@ public class AgentLoop {
             ));
 
             runLoop(new LoopState(sessionKey, sessionId, userId, Map.of(), messages, 0, true,
-                    Map.of("stream", true)), observer);
+                    Map.of("stream", true), new TokenUsageAccumulator()), observer);
             sink.complete();
         } catch (Exception e) {
             log.warn("[AgentLoop] stream 执行失败: {}", e.getMessage());
@@ -232,7 +235,8 @@ public class AgentLoop {
                 messages,
                 checkpoint.iteration(),
                 false,
-                Map.of("resumed_from_checkpoint", true)
+                Map.of("resumed_from_checkpoint", true),
+                new TokenUsageAccumulator()
         ), LoopObserver.NOOP);
     }
 
@@ -251,6 +255,7 @@ public class AgentLoop {
             ChatResponse response = state.stream()
                     ? streamChatResponse(state, tools, observer, iteration)
                     : llmProvider.chat(state.messages(), tools);
+            state.tokenUsage().add(response.usage());
             log.info("[AgentLoop] LLM 响应: finishReason={}, content长度={}, toolCalls={}",
                     response.finishReason(),
                     response.content() != null ? response.content().length() : 0,
@@ -307,6 +312,7 @@ public class AgentLoop {
         var reasoning = new StringBuilder();
         var toolBuilders = new TreeMap<Integer, ToolCallBuilder>();
         var finishReason = new AtomicReference<String>();
+        var usage = new AtomicReference<>(new ChatResponse.TokenUsage(0, 0, 0));
 
         @SuppressWarnings("unchecked")
         var typedTools = (List<com.zhan.jarvis.llm.ToolDefinition>) tools;
@@ -326,6 +332,9 @@ public class AgentLoop {
                     for (var td : delta.toolCallDeltas()) {
                         toolBuilders.computeIfAbsent(td.index(), ignored -> new ToolCallBuilder()).append(td);
                     }
+                    if (delta.usage() != null && delta.usage().totalTokens() > 0) {
+                        usage.set(delta.usage());
+                    }
                     if (delta.finishReason() != null && !delta.finishReason().isBlank()) {
                         finishReason.set(delta.finishReason());
                     }
@@ -339,18 +348,18 @@ public class AgentLoop {
                 content.toString(),
                 toolCalls,
                 finishReason.get() != null ? finishReason.get() : "",
-                new ChatResponse.TokenUsage(0, 0, 0),
+                usage.get(),
                 reasoning.isEmpty() ? null : reasoning.toString()
         );
     }
 
     private LoopOutcome finishRequiresConfirmation(LoopState state, int iteration, String reply) {
-        var metadata = mergedMeta(state, Map.of(
+        var metadata = withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
                 "iteration", iteration,
                 "requires_confirmation", true
-        ));
+        )));
         sessionManager.addMessage(state.sessionId(), "assistant", reply, metadata);
         triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
                 "reply", reply,
@@ -358,16 +367,17 @@ public class AgentLoop {
                 "finish_reason", "requires_confirmation",
                 "max_iterations_reached", false
         )));
-        return new LoopOutcome(state.sessionId(), reply, iteration, "requires_confirmation", true, false);
+        return new LoopOutcome(state.sessionId(), reply, iteration, "requires_confirmation", true, false,
+                state.tokenUsage().toMap());
     }
 
     private LoopOutcome finishFinal(LoopState state, int iteration, String reply, String finishReason) {
-        sessionManager.addMessage(state.sessionId(), "assistant", reply, mergedMeta(state, Map.of(
+        sessionManager.addMessage(state.sessionId(), "assistant", reply, withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
                 "iteration", iteration,
                 "finish_reason", finishReason
-        )));
+        ))));
         triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
                 "reply", reply,
                 "iteration", iteration,
@@ -375,22 +385,24 @@ public class AgentLoop {
                 "max_iterations_reached", false
         )));
         log.info("[AgentLoop] 任务完成，共 {} 轮迭代", iteration);
-        return new LoopOutcome(state.sessionId(), reply, iteration, finishReason, false, false);
+        return new LoopOutcome(state.sessionId(), reply, iteration, finishReason, false, false,
+                state.tokenUsage().toMap());
     }
 
     private LoopOutcome finishMaxIterations(LoopState state, String reply) {
-        sessionManager.addMessage(state.sessionId(), "assistant", reply, mergedMeta(state, Map.of(
+        sessionManager.addMessage(state.sessionId(), "assistant", reply, withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
                 "max_iterations_reached", true
-        )));
+        ))));
         triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
                 "reply", reply,
                 "iteration", agentConfig.maxIterations(),
                 "finish_reason", "max_iterations",
                 "max_iterations_reached", true
         )));
-        return new LoopOutcome(state.sessionId(), reply, agentConfig.maxIterations(), "max_iterations", false, true);
+        return new LoopOutcome(state.sessionId(), reply, agentConfig.maxIterations(), "max_iterations", false, true,
+                state.tokenUsage().toMap());
     }
 
     private void addToolResults(LoopState state, int iteration, List<ToolResult> toolResults,
@@ -410,6 +422,7 @@ public class AgentLoop {
         if (checkpointStore == null || !hasText(pending.confirmId())) {
             return;
         }
+        //存入concurrentHashMap，key：confirmId， value：AgentCheckpoint
         checkpointStore.put(new AgentCheckpoint(
                 pending.confirmId(),
                 pending.result().toolCallId(),
@@ -555,6 +568,12 @@ public class AgentLoop {
         if (state.outputMetadata() != null) {
             metadata.putAll(state.outputMetadata());
         }
+        return metadata;
+    }
+
+    private Map<String, Object> withTokenUsage(LoopState state, Map<String, Object> base) {
+        var metadata = new LinkedHashMap<String, Object>(base);
+        metadata.put("token_usage", state.tokenUsage().toMap());
         return metadata;
     }
 

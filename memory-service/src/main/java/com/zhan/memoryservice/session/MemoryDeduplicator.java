@@ -3,6 +3,7 @@ package com.zhan.memoryservice.session;
 import com.zhan.memoryservice.llm.EmbeddingProvider;
 import com.zhan.memoryservice.llm.LLMProvider;
 import com.zhan.common.llm.PromptManager;
+import com.zhan.memoryservice.config.MemoryServiceConfig;
 import com.zhan.memoryservice.storage.MetadataStore;
 import com.zhan.memoryservice.storage.VectorStore;
 import com.zhan.memoryservice.model.ContextEntry;
@@ -30,16 +31,21 @@ public class MemoryDeduplicator {
     private final EmbeddingProvider embedder;
     private final LLMProvider llm;
     private final PromptManager prompts;
+    private final int dedupTopK;
+    private final double similarityThreshold;
     private final ObjectMapper json = new ObjectMapper();
 
     public MemoryDeduplicator(VectorStore vectorStore, MetadataStore metadata,
                                EmbeddingProvider embedder, LLMProvider llm,
-                               PromptManager prompts) {
+                               PromptManager prompts,
+                               MemoryServiceConfig.DedupConfig dedupConfig) {
         this.vectorStore = vectorStore;
         this.metadata = metadata;
         this.embedder = embedder;
         this.llm = llm;
         this.prompts = prompts;
+        this.dedupTopK = dedupConfig.safeTopK();
+        this.similarityThreshold = dedupConfig.safeSimilarityThreshold();
     }
 
     /**
@@ -51,7 +57,12 @@ public class MemoryDeduplicator {
         // Stage 1: 向量预筛 — 找 top-3 相似的同类已有记忆
         float[] vec = embedder.embed(candidate.abstractText());
         String filter = "context_type == \"memory\"";
-        var similarHits = vectorStore.search(vec, filter, 3);
+        var similarHits = vectorStore.search(vec, filter, dedupTopK).stream()
+                .filter(hit -> hit.score() >= similarityThreshold)
+                .limit(3)
+                .toList();
+        log.debug("记忆去重向量初筛: category={}, hits={}, threshold={}",
+                candidate.category().value(), similarHits.size(), similarityThreshold);
 
         var similarMemories = new ArrayList<ContextEntry>();
         for (var hit : similarHits) {

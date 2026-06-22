@@ -154,6 +154,33 @@ function formatConfirmResult(result) {
   }
 }
 
+function normalizeTokenUsage(value = {}) {
+  const raw = value.token_usage || value.tokenUsage || value.usage || value;
+  const prompt = Number(raw?.prompt_tokens ?? raw?.promptTokens ?? 0);
+  const completion = Number(raw?.completion_tokens ?? raw?.completionTokens ?? 0);
+  const total = Number(raw?.total_tokens ?? raw?.totalTokens ?? prompt + completion);
+  if (!prompt && !completion && !total) {
+    return null;
+  }
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+  };
+}
+
+function TokenUsageLine({ usage }) {
+  if (!usage) return null;
+  return (
+    <div className="token-usage-line">
+      <span>Tokens</span>
+      <span>输入 {usage.promptTokens}</span>
+      <span>输出 {usage.completionTokens}</span>
+      <span>总计 {usage.totalTokens}</span>
+    </div>
+  );
+}
+
 function normalizeChatMessages(items = []) {
   return items
     .filter((item) => item.role === 'user' || item.role === 'assistant')
@@ -166,6 +193,7 @@ function normalizeChatMessages(items = []) {
         role: item.role,
         content: item.content || '',
         createdAt: item.createdAt,
+        tokenUsage: item.role === 'assistant' ? normalizeTokenUsage(item) : null,
         confirmation: item.role === 'assistant' ? extractToolConfirmation(item.content || '', item) : null,
       };
     });
@@ -525,10 +553,16 @@ export default function App() {
         },
         onDone: (data) => {
           if (!data?.content) return;
+          const tokenUsage = normalizeTokenUsage(data);
           setMessages((current) =>
             current.map((message) =>
               message.id === assistantId
-                ? { ...message, content: data.content, confirmation: extractToolConfirmation(data.content, data) }
+                ? {
+                    ...message,
+                    content: data.content,
+                    tokenUsage,
+                    confirmation: extractToolConfirmation(data.content, data),
+                  }
                 : message,
             ),
           );
@@ -1075,6 +1109,7 @@ export default function App() {
                               </button>
                             </div>
                           )}
+                          <TokenUsageLine usage={message.tokenUsage} />
                         </>
                       ) : (
                         <div className="thinking">正在思考</div>

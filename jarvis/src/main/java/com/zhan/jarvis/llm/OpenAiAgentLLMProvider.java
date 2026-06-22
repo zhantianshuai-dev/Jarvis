@@ -111,6 +111,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         //流式输出
         if (stream) {
             body.put("stream", true);
+            body.putObject("stream_options").put("include_usage", true);
         }
 
         // messages
@@ -158,11 +159,12 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         }
         try {
             var root = objectMapper.readTree(data);
+            ChatResponse.TokenUsage usage = parseUsage(root.path("usage"));
             var choice = root.path("choices").isArray() && !root.path("choices").isEmpty()
                     ? root.path("choices").get(0)
                     : null;
             if (choice == null) {
-                return new ChatStreamDelta(null, null, List.of(), null, false);
+                return new ChatStreamDelta(null, null, List.of(), null, usage, false);
             }
 
             String finishReason = choice.path("finish_reason").isMissingNode()
@@ -193,7 +195,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                     toolDeltas.add(new ChatStreamDelta.ToolCallDelta(index, id, name, arguments));
                 }
             }
-            return new ChatStreamDelta(content, reasoning, toolDeltas, finishReason, false);
+            return new ChatStreamDelta(content, reasoning, toolDeltas, finishReason, usage, false);
         } catch (Exception e) {
             throw new RuntimeException("解析 LLM stream 响应失败: " + e.getMessage(), e);
         }
@@ -228,12 +230,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         String finishReason = choice.path("finish_reason").asText("stop");
 
         // usage
-        var usageNode = root.path("usage");
-        var usage = new ChatResponse.TokenUsage(
-                usageNode.path("prompt_tokens").asInt(0),
-                usageNode.path("completion_tokens").asInt(0),
-                usageNode.path("total_tokens").asInt(0)
-        );
+        var usage = parseUsage(root.path("usage"));
 
         log.debug("LLM 响应: finish={}, content长度={}, toolCalls={}, reasoning={}, tokens={}",
                 finishReason, content != null ? content.length() : 0,
@@ -242,6 +239,17 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                 usage.totalTokens());
 
         return new ChatResponse(content, toolCalls, finishReason, usage, reasoningContent);
+    }
+
+    private ChatResponse.TokenUsage parseUsage(tools.jackson.databind.JsonNode usageNode) {
+        if (usageNode == null || usageNode.isMissingNode() || usageNode.isNull()) {
+            return new ChatResponse.TokenUsage(0, 0, 0);
+        }
+        return new ChatResponse.TokenUsage(
+                usageNode.path("prompt_tokens").asInt(0),
+                usageNode.path("completion_tokens").asInt(0),
+                usageNode.path("total_tokens").asInt(0)
+        );
     }
 
     private static String stripTrailingSlash(String s) {

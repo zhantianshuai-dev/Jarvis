@@ -45,6 +45,12 @@ memory-service:
     model: ${RERANK_MODEL:qwen3-rerank}
     threshold: 0.3                        # 分数低于此值的结果会被过滤
 
+  # ---- 长期记忆配置 ----
+  memory:
+    dedup:
+      top-k: ${MEMORY_DEDUP_TOP_K:10}      # 向量初筛召回数量
+      similarity-threshold: ${MEMORY_DEDUP_SIMILARITY_THRESHOLD:0.75}
+
   # ---- 检索参数 ----
   retrieval:
     max-convergence-rounds: 3

@@ -80,7 +80,7 @@ public class ContextBuilder {
             log.debug("记忆检索失败（非致命）: {}", e.getMessage());
         }
 
-        // 4. 无记忆上下文时，直接插入当前消息
+        // 4. 无记忆上下文时，效果就是直接插入当前消息
         messages.add(Message.user(currentMessage));
 
         log.debug("ContextBuilder: 构建 {} 条消息", messages.size());

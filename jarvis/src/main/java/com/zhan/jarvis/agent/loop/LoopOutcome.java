@@ -1,5 +1,7 @@
 package com.zhan.jarvis.agent.loop;
 
+import java.util.Map;
+
 /**
  * AgentLoop 结束状态。
  */
@@ -9,6 +11,7 @@ public record LoopOutcome(
         int iteration,
         String finishReason,
         boolean requiresConfirmation,
-        boolean maxIterationsReached
+        boolean maxIterationsReached,
+        Map<String, Object> tokenUsage
 ) {
 }
