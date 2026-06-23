@@ -39,10 +39,15 @@ public class HttpChannel implements Channel {
 
     public OutboundMessage submitAndAwait(String messageId, String sessionId, String userId,
                                           String content, Duration timeout) {
+        return submitAndAwait(messageId, sessionId, userId, content, timeout, Map.of());
+    }
+
+    public OutboundMessage submitAndAwait(String messageId, String sessionId, String userId,
+                                          String content, Duration timeout, Map<String, Object> metadata) {
         //新建一个sessionKey，用于标识哪个通道，哪个会话
         var sessionKey = new SessionKey(type(), CHANNEL_ID, sessionId);
         //封装为InboundMessage消息
-        var inbound = InboundMessage.of(messageId, sessionKey, sessionId, userId, content);
+        var inbound = InboundMessage.of(messageId, sessionKey, sessionId, userId, content, metadata);
         //将消息提交到消息队列中
         var future = messageBus.submit(inbound);
         try {

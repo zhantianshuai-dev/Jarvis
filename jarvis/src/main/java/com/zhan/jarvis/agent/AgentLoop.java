@@ -24,6 +24,7 @@ import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.tool.ToolContext;
 import com.zhan.jarvis.tool.ToolRegistry;
+import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -34,10 +35,12 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -47,6 +50,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
+    private static final int MAX_VISIBLE_TOOL_RESULT_CHARS = 8_000;
+    private static final int MAX_VISIBLE_TOOL_FILES = 30;
 
     private final JarvisConfig.AgentConfig agentConfig;
     private final AgentLLMProvider llmProvider;
@@ -56,6 +61,7 @@ public class AgentLoop {
     private final ObjectMapper objectMapper;
     private final HookManager hookManager;
     private final AgentCheckpointStore checkpointStore;
+    private final WorkspaceResolver workspaceResolver;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -75,6 +81,15 @@ public class AgentLoop {
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
                      SessionManager sessionManager, ObjectMapper objectMapper,
                      HookManager hookManager, AgentCheckpointStore checkpointStore) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, new WorkspaceResolver(agentConfig));
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver) {
         this.agentConfig = agentConfig;
         this.llmProvider = llmProvider;
         this.toolRegistry = toolRegistry;
@@ -83,6 +98,7 @@ public class AgentLoop {
         this.objectMapper = objectMapper;
         this.hookManager = hookManager;
         this.checkpointStore = checkpointStore;
+        this.workspaceResolver = workspaceResolver;
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -154,61 +170,74 @@ public class AgentLoop {
 
         triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
                 "message", continuationMessage,
-                "workspace", agentConfig.workspace(),
+                "workspace", workspaceFor(metadata),
                 "continuation", true
         ));
         var session = sessionManager.getOrCreate(sessionId, userId);
-        var messages = contextBuilder.build(session, continuationMessage, 20);
-        return runLoop(new LoopState(sessionKey, sessionId, userId, metadata, messages, 0, false,
-                Map.of("continuation", true), new TokenUsageAccumulator()), LoopObserver.NOOP).reply();
+        var messages = contextBuilder.build(session, continuationMessage, 20,
+                RunMode.from(metadata.get("mode")), workspaceFor(metadata));
+        return runLoop(newState(sessionKey, sessionId, userId, metadata, messages, 0, false,
+                Map.of("continuation", true)), LoopObserver.NOOP).reply();
     }
 
     private String runInternal(SessionKey sessionKey, String sessionId, String userMessage,
                                String userId, Map<String, Object> metadata) {
         var session = sessionManager.getOrCreate(sessionId, userId);
+        var runMode = RunMode.from(metadata == null ? null : metadata.get("mode"));
+        String workspace = workspaceFor(metadata);
         triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
                 "message", userMessage,
-                "workspace", agentConfig.workspace()
+                "workspace", workspace,
+                "mode", runMode.value()
         ));
 
-        var messages = contextBuilder.build(session, userMessage, 20);
+        var messages = contextBuilder.build(session, userMessage, 20, runMode, workspace);
         sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
                 "source", "Jarvis",
                 "user_id", userId != null ? userId : ""
         ));
 
-        return runLoop(new LoopState(sessionKey, sessionId, userId,
-                metadata == null ? Map.of() : metadata, messages, 0, false, Map.of(),
-                new TokenUsageAccumulator()), LoopObserver.NOOP).reply();
+        return runLoop(newState(sessionKey, sessionId, userId,
+                withCurrentMessage(metadata, userMessage), messages, 0, false, Map.of()), LoopObserver.NOOP).reply();
     }
 
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
                                                   String userMessage, String userId) {
+        return runStreaming(sessionKey, sessionId, userMessage, userId, Map.of());
+    }
+
+    public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
+                                                  String userMessage, String userId,
+                                                  Map<String, Object> metadata) {
         return Flux.create(sink -> Thread.startVirtualThread(() ->
-                runStreamingInternal(sessionKey, sessionId, userMessage, userId, sink)));
+                runStreamingInternal(sessionKey, sessionId, userMessage, userId, metadata, sink)));
     }
 
     private void runStreamingInternal(SessionKey sessionKey, String sessionId, String userMessage,
-                                      String userId, FluxSink<Map<String, Object>> sink) {
+                                      String userId, Map<String, Object> metadata,
+                                      FluxSink<Map<String, Object>> sink) {
         try {
             var observer = new SseLoopObserver(sink);
             var session = sessionManager.getOrCreate(sessionId, userId);
+            var runMode = RunMode.from(metadata == null ? null : metadata.get("mode"));
+            String workspace = workspaceFor(metadata);
             emit(sink, SseEventTypes.CONNECTED, sessionId, "", "chat", Map.of());
             triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
                     "message", userMessage,
-                    "workspace", agentConfig.workspace(),
+                    "workspace", workspace,
+                    "mode", runMode.value(),
                     "stream", true
             ));
 
-            var messages = contextBuilder.build(session, userMessage, 20);
+            var messages = contextBuilder.build(session, userMessage, 20, runMode, workspace);
             sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
                     "source", "Jarvis",
                     "user_id", userId != null ? userId : "",
                     "stream", true
             ));
 
-            runLoop(new LoopState(sessionKey, sessionId, userId, Map.of(), messages, 0, true,
-                    Map.of("stream", true), new TokenUsageAccumulator()), observer);
+            runLoop(newState(sessionKey, sessionId, userId, withCurrentMessage(metadata, userMessage), messages, 0, true,
+                    Map.of("stream", true)), observer);
             sink.complete();
         } catch (Exception e) {
             log.warn("[AgentLoop] stream 执行失败: {}", e.getMessage());
@@ -236,7 +265,9 @@ public class AgentLoop {
                 checkpoint.iteration(),
                 false,
                 Map.of("resumed_from_checkpoint", true),
-                new TokenUsageAccumulator()
+                new TokenUsageAccumulator(),
+                RunMode.from(checkpoint.metadata() == null ? null : checkpoint.metadata().get("mode")),
+                new LinkedHashSet<>()
         ), LoopObserver.NOOP);
     }
 
@@ -246,12 +277,17 @@ public class AgentLoop {
      */
     private LoopOutcome runLoop(LoopState state, LoopObserver observer) {
         int iteration = state.startIteration();
-        while (iteration < agentConfig.maxIterations()) {
+        int maxIterations = state.runMode().maxIterations(agentConfig.maxIterations());
+        while (iteration < maxIterations) {
             iteration++;
-            log.info("[AgentLoop] 第 {}/{} 轮迭代: sessionId={}, stream={}",
-                    iteration, agentConfig.maxIterations(), state.sessionId(), state.stream());
+            log.info("[AgentLoop] 第 {}/{} 轮迭代: sessionId={}, mode={}, stream={}",
+                    iteration, maxIterations, state.sessionId(), state.runMode().value(), state.stream());
 
-            var tools = toolRegistry.listTools();
+            var tools = toolRegistry.listToolsForMode(
+                    state.runMode(),
+                    latestUserMessage(state),
+                    state.activeDeferredTools()
+            );
             ChatResponse response = state.stream()
                     ? streamChatResponse(state, tools, observer, iteration)
                     : llmProvider.chat(state.messages(), tools);
@@ -270,7 +306,7 @@ public class AgentLoop {
                 state.messages().add(Message.assistant(response.toolCalls(), response.reasoningContent()));
                 //发送到memory-service中进行持久化，然后自动生成摘要，提取记忆
                 sessionManager.addMessage(state.sessionId(), "assistant",
-                        response.reasoningContent() != null ? response.reasoningContent() : "",
+                        "",
                         toolCallsMetadata(iteration, response.toolCalls()));
 
                 var toolResults = executeToolsInParallel(response.toolCalls(), state.sessionKey(),
@@ -288,6 +324,7 @@ public class AgentLoop {
 
                 //如果不需人工确认
                 addToolResults(state, iteration, toolResults, observer, null);
+                promoteDeferredTools(state, toolResults);
                 state.messages().add(Message.system(
                         "请反思以上工具执行结果。如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
                 ));
@@ -301,7 +338,7 @@ public class AgentLoop {
             return outcome;
         }
 
-        String fallback = "达到最大迭代次数（" + agentConfig.maxIterations() + "），请简化任务后重试。";
+        String fallback = "达到最大迭代次数（" + maxIterations + "），请简化任务后重试。";
         var outcome = finishMaxIterations(state, fallback);
         observer.onDone(outcome);
         return outcome;
@@ -397,11 +434,12 @@ public class AgentLoop {
         ))));
         triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
                 "reply", reply,
-                "iteration", agentConfig.maxIterations(),
+                "iteration", state.runMode().maxIterations(agentConfig.maxIterations()),
                 "finish_reason", "max_iterations",
                 "max_iterations_reached", true
         )));
-        return new LoopOutcome(state.sessionId(), reply, agentConfig.maxIterations(), "max_iterations", false, true,
+        return new LoopOutcome(state.sessionId(), reply, state.runMode().maxIterations(agentConfig.maxIterations()),
+                "max_iterations", false, true,
                 state.tokenUsage().toMap());
     }
 
@@ -411,10 +449,12 @@ public class AgentLoop {
             if (pending != null && Objects.equals(result.toolCallId(), pending.result().toolCallId())) {
                 continue;
             }
-            state.messages().add(Message.tool(result.toolCallId(), result.result()));
-            sessionManager.addMessage(state.sessionId(), "tool", result.result(),
-                    toolResultMetadata(iteration, result));
-            observer.onToolResult(state, iteration, result);
+            String visibleResult = llmVisibleToolResult(result);
+            state.messages().add(Message.tool(result.toolCallId(), visibleResult));
+            sessionManager.addMessage(state.sessionId(), "tool", visibleResult,
+                    toolResultMetadata(iteration, result, visibleResult));
+            observer.onToolResult(state, iteration,
+                    new ToolResult(result.toolCallId(), result.toolName(), result.arguments(), visibleResult));
         }
     }
 
@@ -442,7 +482,7 @@ public class AgentLoop {
         var results = new ArrayList<ToolResult>();
         var tasks = new ArrayList<Thread>();
         var callByThread = new java.util.IdentityHashMap<Thread, ToolCall>();
-        var ctx = new ToolContext(sessionId, sessionKey, agentConfig.workspace(), userId, metadata);
+        var ctx = new ToolContext(sessionId, sessionKey, workspaceFor(metadata), userId, metadata);
 
         for (var tc : toolCalls) {
             var thread = Thread.startVirtualThread(() -> {
@@ -533,6 +573,80 @@ public class AgentLoop {
         return null;
     }
 
+    private void promoteDeferredTools(LoopState state, List<ToolResult> toolResults) {
+        if (state.activeDeferredTools() == null) {
+            return;
+        }
+        for (var result : toolResults) {
+            if (!ToolRegistry.TOOL_SEARCH.equals(result.toolName())) {
+                continue;
+            }
+            try {
+                JsonNode root = objectMapper.readTree(result.result());
+                JsonNode tools = root.path("promoted_tools");
+                if (!tools.isArray()) {
+                    continue;
+                }
+                for (JsonNode item : tools) {
+                    String toolName = item.asText("");
+                    if (!toolName.isBlank()) {
+                        state.activeDeferredTools().add(toolName);
+                    }
+                }
+                if (!state.activeDeferredTools().isEmpty()) {
+                    log.info("[AgentLoop] deferred tools 已启用: {}", state.activeDeferredTools());
+                }
+            } catch (Exception e) {
+                log.debug("[AgentLoop] tool_search 结果解析失败: {}", e.getMessage());
+            }
+        }
+    }
+
+    private LoopState newState(SessionKey sessionKey, String sessionId, String userId,
+                               Map<String, Object> metadata, List<Message> messages,
+                               int startIteration, boolean stream, Map<String, Object> outputMetadata) {
+        var safeMetadata = metadata == null ? Map.<String, Object>of() : metadata;
+        return new LoopState(
+                sessionKey,
+                sessionId,
+                userId,
+                safeMetadata,
+                messages,
+                startIteration,
+                stream,
+                outputMetadata == null ? Map.of() : outputMetadata,
+                new TokenUsageAccumulator(),
+                RunMode.from(safeMetadata.get("mode")),
+                new LinkedHashSet<>()
+        );
+    }
+
+    private Map<String, Object> withCurrentMessage(Map<String, Object> metadata, String userMessage) {
+        var merged = new LinkedHashMap<String, Object>(metadata == null ? Map.of() : metadata);
+        merged.put("current_message", userMessage != null ? userMessage : "");
+        merged.put("workspace", workspaceFor(metadata));
+        return merged;
+    }
+
+    private String workspaceFor(Map<String, Object> metadata) {
+        Object raw = metadata == null ? null : metadata.get("workspace");
+        return workspaceResolver.resolveWorkspace(raw);
+    }
+
+    private String latestUserMessage(LoopState state) {
+        Object current = state.metadata() == null ? null : state.metadata().get("current_message");
+        if (current != null && !String.valueOf(current).isBlank()) {
+            return String.valueOf(current);
+        }
+        for (int i = state.messages().size() - 1; i >= 0; i--) {
+            var message = state.messages().get(i);
+            if ("user".equals(message.role()) && message.content() != null) {
+                return message.content();
+            }
+        }
+        return "";
+    }
+
     private Map<String, Object> toolCallsMetadata(int iteration, List<ToolCall> toolCalls) {
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
@@ -551,7 +665,109 @@ public class AgentLoop {
         return metadata;
     }
 
-    private Map<String, Object> toolResultMetadata(int iteration, ToolResult result) {
+    private String llmVisibleToolResult(ToolResult result) {
+        if (result == null || result.result() == null) {
+            return "";
+        }
+        if ("git".equals(result.toolName())) {
+            String compressed = compressGitToolResult(result);
+            if (compressed != null) {
+                return compressed;
+            }
+        }
+        if (result.result().length() <= MAX_VISIBLE_TOOL_RESULT_CHARS) {
+            return result.result();
+        }
+        return toJson(Map.of(
+                "tool", result.toolName(),
+                "summary", "工具结果过长，已压缩。需要细节时请针对具体文件或范围重新调用工具。",
+                "result_preview", result.result().substring(0, MAX_VISIBLE_TOOL_RESULT_CHARS),
+                "original_chars", result.result().length(),
+                "truncated", true
+        ));
+    }
+
+    private String compressGitToolResult(ToolResult result) {
+        try {
+            JsonNode root = objectMapper.readTree(result.result());
+            String action = root.path("action").asText("");
+            if (!"diff".equals(action)) {
+                return null;
+            }
+
+            String output = root.path("output").asText("");
+            int exitCode = root.path("exit_code").asInt(0);
+            boolean rawTruncated = root.path("truncated").asBoolean(false);
+            var files = extractDiffStatFiles(output);
+            String summary = summarizeDiff(output, files);
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("tool", "git.diff");
+            payload.put("summary", summary);
+            payload.put("files", files);
+            payload.put("truncated", rawTruncated || output.length() > MAX_VISIBLE_TOOL_RESULT_CHARS
+                    || files.size() >= MAX_VISIBLE_TOOL_FILES);
+            payload.put("exit_code", exitCode);
+            payload.put("command", root.path("command").toString());
+            if (exitCode != 0) {
+                payload.put("error", root.path("error").asText("Git diff 执行失败"));
+                payload.put("output_preview", output.length() > 1200 ? output.substring(0, 1200) : output);
+            }
+            payload.put("hint", "需要具体改动时，请针对单个文件调用 git diff，设置 path 且 stat=false。");
+            return toJson(payload);
+        } catch (Exception e) {
+            log.debug("[AgentLoop] git diff 结果压缩失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private List<String> extractDiffStatFiles(String output) {
+        if (output == null || output.isBlank()) {
+            return List.of();
+        }
+        var files = new ArrayList<String>();
+        for (String line : output.split("\\R")) {
+            String stripped = line.strip();
+            int marker = stripped.indexOf(" | ");
+            if (marker <= 0 || stripped.contains(" file changed")
+                    || stripped.contains(" files changed")) {
+                continue;
+            }
+            String file = stripped.substring(0, marker).strip();
+            if (!file.isBlank() && files.size() < MAX_VISIBLE_TOOL_FILES) {
+                files.add(file);
+            }
+        }
+        return List.copyOf(files);
+    }
+
+    private String summarizeDiff(String output, List<String> files) {
+        String statLine = "";
+        if (output != null) {
+            for (String line : output.split("\\R")) {
+                String stripped = line.strip();
+                if (stripped.contains(" file changed") || stripped.contains(" files changed")) {
+                    statLine = stripped;
+                }
+            }
+        }
+        if (!statLine.isBlank()) {
+            return statLine;
+        }
+        if (!files.isEmpty()) {
+            return files.size() + " 个文件修改";
+        }
+        return "没有 diff 输出，可能当前范围没有变更。";
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "{\"error\":\"JSON 序列化失败\"}";
+        }
+    }
+
+    private Map<String, Object> toolResultMetadata(int iteration, ToolResult result, String visibleResult) {
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
@@ -560,6 +776,9 @@ public class AgentLoop {
         metadata.put("tool_call_id", result.toolCallId());
         metadata.put("tool_name", result.toolName());
         metadata.put("arguments", result.arguments());
+        metadata.put("raw_result_length", result.result() != null ? result.result().length() : 0);
+        metadata.put("visible_result_length", visibleResult != null ? visibleResult.length() : 0);
+        metadata.put("compressed", result.result() != null && !Objects.equals(result.result(), visibleResult));
         return metadata;
     }
 

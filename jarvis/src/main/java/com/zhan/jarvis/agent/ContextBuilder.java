@@ -12,9 +12,9 @@ import org.slf4j.LoggerFactory;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 上下文构建器 — 组装 LLM 调用所需的完整消息列表。
@@ -43,10 +43,27 @@ public class ContextBuilder {
      * 构建完整消息列表。
      */
     public List<Message> build(Session session, String currentMessage, int historyRounds) {
+        return build(session, currentMessage, historyRounds, RunMode.AGENT);
+    }
+
+    /**
+     * 按运行模式构建完整消息列表。
+     * /chat 模式只保留对话能力，不注入工具摘要和技能加载提示。
+     */
+    public List<Message> build(Session session, String currentMessage, int historyRounds, RunMode runMode) {
+        return build(session, currentMessage, historyRounds, runMode, agentConfig.workspace());
+    }
+
+    /**
+     * 按运行模式和当前工作目录构建完整消息列表。
+     */
+    public List<Message> build(Session session, String currentMessage, int historyRounds,
+                               RunMode runMode, String workspace) {
         var messages = new ArrayList<Message>();
+        RunMode mode = runMode != null ? runMode : RunMode.AGENT;
 
         // 1. System prompt（含技能系统）
-        messages.add(Message.system(buildSystemPrompt()));
+        messages.add(Message.system(buildSystemPrompt(mode, currentMessage, workspace)));
 
         // 2. Session context（Working Memory + 最近消息，从 memory-service 获取）
         try {
@@ -60,6 +77,9 @@ public class ContextBuilder {
 
             // Conversation history（从 memory-service JSONL，带轮次限制）
             for (var stub : ctx.messages()) {
+                if (mode == RunMode.CHAT && isTraceRole(stub.role())) {
+                    continue;
+                }
                 messages.add(new Message(stub.role(), stub.content(), null, null, null));
             }
         } catch (Exception e) {
@@ -90,21 +110,38 @@ public class ContextBuilder {
     /**
      * 构建系统提示词，动态注入工具摘要 + 技能系统（渐进式加载）。
      */
-    private String buildSystemPrompt() {
+    private String buildSystemPrompt(RunMode mode, String currentMessage, String workspace) {
+        String now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"))
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
+
+        if (mode == RunMode.CHAT) {
+            return """
+                    你叫{name}，是一个 AI 个人助手。
+                    当前为 /chat 模式：你只能进行普通对话、解释概念、回答一般问题。
+                    不要调用、模拟或声称已经调用任何工具；不要读取文件、列目录、执行命令或访问外部系统。
+                    如果用户要求查看文件、执行命令、检索外部信息或修改项目，请说明需要切换到 /agent 或 /super-agent 模式。
+
+                    当前时间: {now}
+                    """.replace("{name}", agentConfig.name())
+                    .replace("{now}", now);
+        }
+
         String template = agentConfig.systemPromptTemplate();
         if (template == null || template.isBlank()) {
             template = "你是 Jarvis，一个具有工具调用能力的 AI 助手。";
         }
 
-        String now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"))
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"));
-
         var sb = new StringBuilder();
         sb.append(template
-                .replace("{workspace}", agentConfig.workspace())
+                .replace("{workspace}", workspace != null && !workspace.isBlank() ? workspace : agentConfig.workspace())
                 .replace("{name}", agentConfig.name())
                 .replace("{now}", now)
-                .replace("{tool_summary}", buildToolSummary()));
+                .replace("{tool_summary}", buildToolSummary(mode, currentMessage)));
+
+        String deferredToolsSection = buildDeferredToolsSection(mode, currentMessage);
+        if (!deferredToolsSection.isBlank()) {
+            sb.append("\n\n").append(deferredToolsSection);
+        }
 
         // 技能系统：渐进式加载
         String skillsSection = buildSkillsSection();
@@ -112,6 +149,29 @@ public class ContextBuilder {
             sb.append("\n\n").append(skillsSection);
         }
 
+        return sb.toString();
+    }
+
+    /**
+     * 延迟工具目录：只列 group/name/短说明，不暴露完整 schema。
+     * LLM 需要时应调用 tool_search，优先使用 select:<tool_name> 精确加载。
+     */
+    private String buildDeferredToolsSection(RunMode mode, String currentMessage) {
+        var tools = toolRegistry.availableDeferredToolsForMode(mode, currentMessage);
+        if (tools.isEmpty()) {
+            return "";
+        }
+        var sb = new StringBuilder();
+        sb.append("<available-deferred-tools>\n");
+        sb.append("Use tool_search to load full schema before calling these tools. ");
+        sb.append("Prefer query=\"select:<tool_name>\" and set group to one of: git, cron, feishu, image, subagent, mcp.\n");
+        for (var tool : tools) {
+            sb.append("- group=").append(tool.group())
+                    .append(" name=").append(tool.name())
+                    .append(" description=").append(shortText(tool.description(), 80))
+                    .append("\n");
+        }
+        sb.append("</available-deferred-tools>");
         return sb.toString();
     }
 
@@ -149,8 +209,8 @@ public class ContextBuilder {
     /**
      * 从 ToolRegistry 动态生成工具摘要（对标 Jarvis identity 中的能力列表）。
      */
-    private String buildToolSummary() {
-        var tools = toolRegistry.listTools();
+    private String buildToolSummary(RunMode mode, String currentMessage) {
+        var tools = toolRegistry.listToolsForMode(mode, currentMessage, Set.of());
         if (tools.isEmpty()) return "";
 
         var sb = new StringBuilder("你拥有以下能力：\n");
@@ -158,5 +218,16 @@ public class ContextBuilder {
             sb.append("- ").append(td.name()).append(": ").append(td.description()).append("\n");
         }
         return sb.toString();
+    }
+
+    private boolean isTraceRole(String role) {
+        return "tool".equals(role);
+    }
+
+    private String shortText(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 }

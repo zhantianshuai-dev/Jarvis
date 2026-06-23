@@ -36,6 +36,7 @@ import com.zhan.jarvis.tool.SseTransport;
 import com.zhan.jarvis.tool.StdioTransport;
 import com.zhan.jarvis.tool.ToolRegistry;
 import com.zhan.jarvis.tool.impl.*;
+import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -133,6 +134,11 @@ public class AppConfig {
     }
 
     @Bean
+    public WorkspaceResolver workspaceResolver(JarvisConfig config) {
+        return new WorkspaceResolver(config.agent());
+    }
+
+    @Bean
     public TaskManager taskManager(ObjectMapper objectMapper, JarvisConfig config) {
         return new TaskManager(objectMapper, config.agent().workspace());
     }
@@ -225,10 +231,11 @@ public class AppConfig {
     public AgentLoop agentLoop(JarvisConfig config, AgentLLMProvider llmProvider,
                                 ToolRegistry toolRegistry, ContextBuilder contextBuilder,
                                 SessionManager sessionManager, ObjectMapper objectMapper,
-                                HookManager hookManager, AgentCheckpointStore checkpointStore) {
+                                HookManager hookManager, AgentCheckpointStore checkpointStore,
+                                WorkspaceResolver workspaceResolver) {
         log.info("创建 AgentLoop: maxIterations={}", config.agent().maxIterations());
         return new AgentLoop(config.agent(), llmProvider, toolRegistry, contextBuilder,
-                sessionManager, objectMapper, hookManager, checkpointStore);
+                sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver);
     }
 
     // ---- 2.6 MessageBus 解耦 ----

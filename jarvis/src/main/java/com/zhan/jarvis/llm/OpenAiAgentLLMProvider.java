@@ -50,6 +50,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
 
         log.debug("LLM 请求: {} 条消息, {} 个工具, 模型={}", messages.size(),
                 tools != null ? tools.size() : 0, config.model());
+        logRequestBody(body, false);
 
         String raw;
         try {
@@ -83,6 +84,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         var body = buildRequestBody(messages, tools, true);
         log.debug("LLM stream 请求: {} 条消息, {} 个工具, 模型={}", messages.size(),
                 tools != null ? tools.size() : 0, config.model());
+        logRequestBody(body, true);
 
         return webClient.post()
                 .uri("/v1/chat/completions")
@@ -151,6 +153,14 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         }
 
         return body;
+    }
+
+    private void logRequestBody(ObjectNode body, boolean stream) {
+        if (!config.logRequestBody()) {
+            return;
+        }
+        String mode = stream ? "stream" : "chat";
+        log.info("LLM {} 请求体 JSON:\n{}", mode, body.toPrettyString());
     }
 
     private ChatStreamDelta parseStreamData(String data) {

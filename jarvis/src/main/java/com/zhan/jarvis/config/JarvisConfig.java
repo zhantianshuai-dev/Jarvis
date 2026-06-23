@@ -27,7 +27,8 @@ public record JarvisConfig(
         String apiBase,
         String model,
         double temperature,
-        int maxTokens
+        int maxTokens,
+        boolean logRequestBody
     ) {}
 
     /** memory-service 连接配置 */
@@ -40,8 +41,15 @@ public record JarvisConfig(
         String name,
         int maxIterations,
         String workspace,
+        WorkspaceOption[] workspaces,
         String systemPromptTemplate
-    ) {}
+    ) {
+        public record WorkspaceOption(
+            String id,
+            String label,
+            String path
+        ) {}
+    }
 
     /** HTTP API 认证配置 */
     public record AuthConfig(

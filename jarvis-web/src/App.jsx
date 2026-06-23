@@ -38,6 +38,7 @@ import {
   deleteWorktree,
   getChatSessionMessages,
   keepWorktree,
+  listWorkspaces,
   listWorktrees,
   listChatSessions,
   login,
@@ -50,6 +51,12 @@ import {
 const TOKEN_KEY = 'jarvis.access_token';
 const USER_KEY = 'jarvis.user';
 const SESSION_KEY = 'jarvis.chat_session_id';
+const WORKSPACE_KEY = 'jarvis.workspace_id';
+const RUN_MODES = [
+  { value: 'chat', label: 'Chat', command: '/chat' },
+  { value: 'agent', label: 'Agent', command: '/agent' },
+  { value: 'super_agent', label: 'Super Agent', command: '/super-agent' },
+];
 
 function createSessionId() {
   return `web_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
@@ -99,6 +106,15 @@ function normalizeSession(result) {
     expiresIn: result.expiresIn,
     user,
   };
+}
+
+function normalizeWorkspaces(items = []) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: item.id || '',
+    label: item.label || item.id || 'Workspace',
+    path: item.path || '',
+    default: Boolean(item.default),
+  })).filter((item) => item.id);
 }
 
 function firstName(user) {
@@ -179,6 +195,10 @@ function TokenUsageLine({ usage }) {
       <span>总计 {usage.totalTokens}</span>
     </div>
   );
+}
+
+function selectedRunModeLabel(value) {
+  return RUN_MODES.find((item) => item.value === value)?.label || 'Agent';
 }
 
 function normalizeChatMessages(items = []) {
@@ -323,6 +343,12 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [chatError, setChatError] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
+  const [runMode, setRunMode] = useState('agent');
+  const [runModeOpen, setRunModeOpen] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [selectedWorkspace, setSelectedWorkspace] = useState(() => localStorage.getItem(WORKSPACE_KEY) || '');
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceQuery, setWorkspaceQuery] = useState('');
   const [activeView, setActiveView] = useState('chat');
   const [worktrees, setWorktrees] = useState([]);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -330,6 +356,19 @@ export default function App() {
   const [worktreeNotice, setWorktreeNotice] = useState('');
   const [worktreeForm, setWorktreeForm] = useState({ name: '', baseRef: 'HEAD', taskId: '' });
   const scrollRef = useRef(null);
+  const runModeRef = useRef(null);
+  const workspaceRef = useRef(null);
+  const selectedWorkspaceItem = useMemo(
+    () => workspaces.find((item) => item.id === selectedWorkspace) || null,
+    [selectedWorkspace, workspaces],
+  );
+  const filteredWorkspaces = useMemo(() => {
+    const query = workspaceQuery.trim().toLowerCase();
+    if (!query) return workspaces;
+    return workspaces.filter((item) => {
+      return item.label.toLowerCase().includes(query) || item.path.toLowerCase().includes(query);
+    });
+  }, [workspaceQuery, workspaces]);
 
   useEffect(() => {
     let cancelled = false;
@@ -366,12 +405,57 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    function closeFloatingMenus(event) {
+      if (!runModeRef.current?.contains(event.target)) {
+        setRunModeOpen(false);
+      }
+      if (!workspaceRef.current?.contains(event.target)) {
+        setWorkspaceOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', closeFloatingMenus);
+    return () => document.removeEventListener('mousedown', closeFloatingMenus);
+  }, []);
+
+  useEffect(() => {
     if (sessionId) {
       localStorage.setItem(SESSION_KEY, sessionId);
     } else {
       localStorage.removeItem(SESSION_KEY);
     }
   }, [sessionId]);
+
+  useEffect(() => {
+    if (selectedWorkspace) {
+      localStorage.setItem(WORKSPACE_KEY, selectedWorkspace);
+    }
+  }, [selectedWorkspace]);
+
+  useEffect(() => {
+    if (authState !== 'authenticated' || !session?.token) {
+      return;
+    }
+    let cancelled = false;
+    async function loadWorkspaces() {
+      try {
+        const result = await listWorkspaces(session.token);
+        if (cancelled) return;
+        const next = normalizeWorkspaces(result.workspaces);
+        setWorkspaces(next);
+        const stored = localStorage.getItem(WORKSPACE_KEY);
+        const fallback = result.defaultWorkspaceId || next.find((item) => item.default)?.id || next[0]?.id || '';
+        setSelectedWorkspace(next.some((item) => item.id === stored) ? stored : fallback);
+      } catch {
+        if (!cancelled) {
+          setWorkspaces([]);
+        }
+      }
+    }
+    loadWorkspaces();
+    return () => {
+      cancelled = true;
+    };
+  }, [authState, session?.token]);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ block: 'end' });
@@ -541,6 +625,8 @@ export default function App() {
       await streamChat(session.token, {
         sessionId: activeSessionId,
         message: content,
+        mode: runMode,
+        workspace: selectedWorkspace,
         onToken: (token) => {
           if (!token) return;
           setMessages((current) =>
@@ -1132,52 +1218,193 @@ export default function App() {
           )}
 
           {activeView === 'chat' && (
-          <div className="composer-wrap">
-            {chatError && <div className="chat-error">{chatError}</div>}
-            <form className="composer" onSubmit={handleSend}>
-              <button className="composer-tool" type="button" aria-label="添加">
-                <Plus size={23} />
-              </button>
-              <textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing || event.keyCode === 229) {
-                    return;
-                  }
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSend(event);
-                  }
-                }}
-                placeholder="有问题，尽管问"
-                rows={1}
-              />
-              <button className="composer-tool" type="button" aria-label="语音输入">
-                <Mic size={20} />
-              </button>
-              <button className="send-button" type="submit" disabled={!draft.trim() || chatBusy}>
-                <ArrowUp size={18} />
-              </button>
-            </form>
-            {messages.length === 0 && (
-              <div className="quick-actions">
-                <button type="button">
-                  <ImageIcon size={18} />
-                  生成图片
-                </button>
-                <button type="button">
-                  <Pencil size={18} />
-                  撰写或编辑
-                </button>
-                <button type="button">
-                  <Globe size={18} />
-                  查找资料
-                </button>
+            <>
+              <div className="composer-wrap">
+                {chatError && <div className="chat-error">{chatError}</div>}
+                <form className="composer" onSubmit={handleSend}>
+                  <textarea
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) {
+                        return;
+                      }
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        handleSend(event);
+                      }
+                    }}
+                    placeholder="今天帮你做些什么？ @ 引用对话文件，/ 调用技能与指令"
+                    rows={1}
+                  />
+                  <div className="composer-toolbar">
+                    <div className="composer-left-tools">
+                      <div className="mode-picker-wrap" ref={runModeRef}>
+                        <button
+                          className="mode-picker toolbar-pill"
+                          type="button"
+                          disabled={chatBusy}
+                          aria-haspopup="menu"
+                          aria-expanded={runModeOpen}
+                          onClick={() => setRunModeOpen((open) => !open)}
+                        >
+                          <Sparkles size={18} />
+                          <span>{selectedRunModeLabel(runMode)}</span>
+                          <ChevronDown size={16} />
+                        </button>
+                        {runModeOpen && (
+                          <div className="mode-menu" role="menu">
+                            {RUN_MODES.map((item) => {
+                              const active = item.value === runMode;
+                              return (
+                                <button
+                                  key={item.value}
+                                  className={`mode-menu-item${active ? ' active' : ''}`}
+                                  type="button"
+                                  role="menuitemradio"
+                                  aria-checked={active}
+                                  onClick={() => {
+                                    setRunMode(item.value);
+                                    setRunModeOpen(false);
+                                  }}
+                                >
+                                  <span className="mode-menu-icon">
+                                    {item.value === 'chat' && <MessageSquarePlus size={18} />}
+                                    {item.value === 'agent' && <Sparkles size={18} />}
+                                    {item.value === 'super_agent' && <Bot size={18} />}
+                                  </span>
+                                  <span className="mode-menu-text">
+                                    <span>{item.label}</span>
+                                    <span>{item.command}</span>
+                                  </span>
+                                  <span className="mode-menu-check">
+                                    {active && <Check size={17} />}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <button className="toolbar-pill" type="button">
+                        <Library size={20} />
+                        <span>Auto</span>
+                        <ChevronDown size={16} />
+                      </button>
+                      <button className="toolbar-pill" type="button">
+                        <Library size={20} />
+                        <span>技能</span>
+                        <ChevronDown size={16} />
+                      </button>
+                      <button className="toolbar-pill" type="button">
+                        <Globe size={20} />
+                        <span>连接器</span>
+                        <ChevronDown size={16} />
+                      </button>
+                      <button className="toolbar-pill" type="button">
+                        <Lock size={19} />
+                        <span>默认权限</span>
+                        <ChevronDown size={16} />
+                      </button>
+                    </div>
+                    <div className="composer-right-tools">
+                      <button className="composer-tool" type="button" aria-label="添加">
+                        <Plus size={24} />
+                      </button>
+                      <button className="composer-tool soft" type="button" aria-label="技能">
+                        <Sparkles size={22} />
+                      </button>
+                      <button className="composer-tool soft" type="button" aria-label="语音输入">
+                        <Mic size={21} />
+                      </button>
+                      <button className="send-button" type="submit" disabled={!draft.trim() || chatBusy}>
+                        <ArrowUp size={20} />
+                      </button>
+                    </div>
+                  </div>
+                </form>
+                <div className="composer-workspace-row">
+                  <div className="workspace-picker-wrap" ref={workspaceRef}>
+                    <button
+                      className="workspace-picker"
+                      type="button"
+                      disabled={chatBusy || workspaces.length === 0}
+                      title={selectedWorkspaceItem?.path || ''}
+                      aria-haspopup="menu"
+                      aria-expanded={workspaceOpen}
+                      onClick={() => {
+                        setWorkspaceQuery('');
+                        setWorkspaceOpen((open) => !open);
+                      }}
+                    >
+                      <Folder size={18} />
+                      <span>{selectedWorkspaceItem?.label || '选择工作空间'}</span>
+                      <ChevronDown size={16} />
+                    </button>
+                    {workspaceOpen && (
+                      <div className="workspace-menu" role="menu">
+                        <label className="workspace-search">
+                          <input
+                            value={workspaceQuery}
+                            onChange={(event) => setWorkspaceQuery(event.target.value)}
+                            placeholder="搜索工作空间"
+                            autoFocus
+                          />
+                          <Search size={19} />
+                        </label>
+                        <div className="workspace-menu-list">
+                          {filteredWorkspaces.length === 0 ? (
+                            <div className="workspace-empty">没有匹配的工作空间</div>
+                          ) : (
+                            filteredWorkspaces.map((item) => {
+                              const active = item.id === selectedWorkspace;
+                              return (
+                                <button
+                                  key={item.id}
+                                  className={`workspace-menu-item${active ? ' active' : ''}`}
+                                  type="button"
+                                  role="menuitemradio"
+                                  aria-checked={active}
+                                  onClick={() => {
+                                    setSelectedWorkspace(item.id);
+                                    setWorkspaceOpen(false);
+                                  }}
+                                >
+                                  <span className="workspace-menu-main">
+                                    <span>{item.label}</span>
+                                    {item.path && <span>{item.path}</span>}
+                                  </span>
+                                  <span className="workspace-menu-check">
+                                    {active && <Check size={18} />}
+                                  </span>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {messages.length === 0 && (
+                  <div className="quick-actions">
+                    <button type="button">
+                      <ImageIcon size={18} />
+                      生成图片
+                    </button>
+                    <button type="button">
+                      <Pencil size={18} />
+                      撰写或编辑
+                    </button>
+                    <button type="button">
+                      <Globe size={18} />
+                      查找资料
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-            <p className="composer-note">Jarvis 可能会出错。请核查重要信息。</p>
-          </div>
+              <p className="composer-note">Jarvis 可能会出错。请核查重要信息。</p>
+            </>
           )}
         </section>
 

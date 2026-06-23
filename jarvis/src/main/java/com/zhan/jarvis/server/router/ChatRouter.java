@@ -2,11 +2,13 @@ package com.zhan.jarvis.server.router;
 
 import cn.hutool.core.util.IdUtil;
 import com.zhan.jarvis.agent.AgentLoop;
+import com.zhan.jarvis.agent.RunMode;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.channel.HttpChannel;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.server.sse.SseEventHub;
 import com.zhan.jarvis.server.sse.SseEventTypes;
+import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.slf4j.Logger;
@@ -41,17 +43,21 @@ public class ChatRouter {
     private final HttpChannel httpChannel;
     private final AgentLoop agentLoop;
     private final SseEventHub sseEventHub;
+    private final WorkspaceResolver workspaceResolver;
 
-    public ChatRouter(HttpChannel httpChannel, AgentLoop agentLoop, SseEventHub sseEventHub) {
+    public ChatRouter(HttpChannel httpChannel, AgentLoop agentLoop, SseEventHub sseEventHub,
+                      WorkspaceResolver workspaceResolver) {
         this.httpChannel = httpChannel;
         this.agentLoop = agentLoop;
         this.sseEventHub = sseEventHub;
+        this.workspaceResolver = workspaceResolver;
     }
 
     @Bean
     public RouterFunction<ServerResponse> chatRoute() {
         return route(POST("/api/v1/chat"), this::handleChat)
                 .andRoute(POST("/api/v1/chat/stream"), this::handleChatStream)
+                .andRoute(GET("/api/v1/workspaces"), this::handleWorkspaces)
                 .andRoute(GET("/api/v1/events"), this::handleEvents)
                 .andRoute(GET("/api/v1/health"), this::handleHealth);
     }
@@ -70,11 +76,14 @@ public class ChatRouter {
                             ? cr.sessionId()
                             : "session_" + IdUtil.getSnowflake(1, 1).nextId();
                     String userId = authenticatedUserId(req, cr.userId());
+                    RunMode mode = RunMode.from(cr.mode());
+                    String workspace = workspaceResolver.resolveWorkspace(cr.workspace());
                     String messageId = "msg_" + IdUtil.getSnowflake(1, 1).nextId();
-                    log.info("收到消息: sessionId={}, message={}", sessionId, cr.message());
+                    log.info("收到消息: sessionId={}, mode={}, workspace={}, message={}",
+                            sessionId, mode.value(), workspace, cr.message());
 
                     var outbound = httpChannel.submitAndAwait(messageId, sessionId, userId,
-                            cr.message(), RESPONSE_TIMEOUT);
+                            cr.message(), RESPONSE_TIMEOUT, Map.of("mode", mode.value(), "workspace", workspace));
                     return Map.<String, Object>of(
                             "session_id", outbound.sessionId(),
                             "reply", outbound.content()
@@ -90,10 +99,14 @@ public class ChatRouter {
                             ? cr.sessionId()
                             : "session_" + IdUtil.getSnowflake(1, 1).nextId();
                     String userId = authenticatedUserId(req, cr.userId());
+                    RunMode mode = RunMode.from(cr.mode());
+                    String workspace = workspaceResolver.resolveWorkspace(cr.workspace());
                     var sessionKey = new SessionKey("http", "default", sessionId);
-                    log.info("收到流式消息: sessionId={}, message={}", sessionId, cr.message());
+                    log.info("收到流式消息: sessionId={}, mode={}, workspace={}, message={}",
+                            sessionId, mode.value(), workspace, cr.message());
 
-                    var events = agentLoop.runStreaming(sessionKey, sessionId, cr.message(), userId)
+                    var events = agentLoop.runStreaming(sessionKey, sessionId, cr.message(), userId,
+                                    Map.of("mode", mode.value(), "workspace", workspace))
                             .map(this::toServerSentEvent);
                     return ServerResponse.ok()
                             .contentType(MediaType.TEXT_EVENT_STREAM)
@@ -108,6 +121,13 @@ public class ChatRouter {
         return ServerResponse.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .body(sseEventHub.subscribe(sessionId), ServerSentEvent.class);
+    }
+
+    private Mono<ServerResponse> handleWorkspaces(ServerRequest req) {
+        return ServerResponse.ok().bodyValue(Map.of(
+                "defaultWorkspaceId", workspaceResolver.defaultWorkspaceId(),
+                "workspaces", workspaceResolver.payload()
+        ));
     }
 
     private ServerSentEvent<Map<String, Object>> toServerSentEvent(Map<String, Object> data) {

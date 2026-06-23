@@ -1,7 +1,7 @@
 ---
 name: cron
 description: Schedule reminders and recurring agent tasks.
-always: true
+always: false
 ---
 
 # Cron

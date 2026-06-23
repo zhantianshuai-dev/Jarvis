@@ -1,10 +1,12 @@
 package com.zhan.jarvis.agent.loop;
 
 import com.zhan.jarvis.channel.SessionKey;
+import com.zhan.jarvis.agent.RunMode;
 import com.zhan.jarvis.llm.Message;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * AgentLoop 单次运行状态。
@@ -18,6 +20,8 @@ public record LoopState(
         int startIteration,
         boolean stream,
         Map<String, Object> outputMetadata,
-        TokenUsageAccumulator tokenUsage
+        TokenUsageAccumulator tokenUsage,
+        RunMode runMode,
+        Set<String> activeDeferredTools
 ) {
 }

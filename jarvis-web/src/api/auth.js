@@ -58,10 +58,10 @@ export function changePassword(token, { oldPassword, newPassword }) {
   });
 }
 
-export function sendChat(token, { sessionId, message }) {
+export function sendChat(token, { sessionId, message, mode, workspace }) {
   return request('/api/v1/chat', {
     token,
-    body: { sessionId, message },
+    body: { sessionId, message, mode, workspace },
   });
 }
 
@@ -89,6 +89,10 @@ export function getChatSessionMessages(token, sessionId) {
 
 export function listWorktrees(token) {
   return request('/api/v1/git/worktrees', { method: 'GET', token });
+}
+
+export function listWorkspaces(token) {
+  return request('/api/v1/workspaces', { method: 'GET', token });
 }
 
 export function createWorktree(token, { name, baseRef, taskId }) {
@@ -132,7 +136,7 @@ function parseSseBlock(block) {
 
 export async function streamChat(
   token,
-  { sessionId, message, onToken, onReasoning, onToolCall, onToolResult, onDone, signal },
+  { sessionId, message, mode, workspace, onToken, onReasoning, onToolCall, onToolResult, onDone, signal },
 ) {
   let response;
   try {
@@ -143,7 +147,7 @@ export async function streamChat(
         Accept: 'text/event-stream',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ sessionId, message }),
+      body: JSON.stringify({ sessionId, message, mode, workspace }),
       signal,
     });
   } catch (error) {

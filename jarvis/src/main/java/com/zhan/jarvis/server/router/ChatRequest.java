@@ -6,5 +6,7 @@ package com.zhan.jarvis.server.router;
 public record ChatRequest(
     String sessionId,
     String message,
-    String userId
+    String userId,
+    String mode,
+    String workspace
 ) {}

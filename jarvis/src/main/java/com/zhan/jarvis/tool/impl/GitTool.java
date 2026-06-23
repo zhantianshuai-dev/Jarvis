@@ -28,6 +28,7 @@ public class GitTool implements McpTool {
     private static final int MAX_OUTPUT_CHARS = 50_000;
     private static final int DEFAULT_LOG_LIMIT = 10;
     private static final int MAX_LOG_LIMIT = 50;
+    private static final int MAX_DIFF_OUTPUT_CHARS = 12_000;
 
     private final ObjectMapper objectMapper;
     private final Path defaultGitWorkspace;
@@ -70,10 +71,17 @@ public class GitTool implements McpTool {
                 .add("restore");
         props.putObject("path")
                 .put("type", "string")
-                .put("description", "可选，仓库内路径。默认使用 GitTool 工作根目录。");
+                .put("description", "可选，仓库内路径。diff 时表示要查看的文件/目录；其他 action 表示执行目录。");
         props.putObject("target")
                 .put("type", "string")
-                .put("description", "可选，diff/show 的目标文件、提交 SHA 或引用名。");
+                .put("description", "可选，show 的提交 SHA/引用名，或 diff 的提交/引用范围。不要传 --cached，staged diff 请用 scope=staged。");
+        props.putObject("scope")
+                .put("type", "string")
+                .put("description", "diff 范围。unstaged=工作区未暂存，staged=已暂存，all=同时查看未暂存和已暂存。默认 unstaged。")
+                .putArray("enum")
+                .add("unstaged")
+                .add("staged")
+                .add("all");
         props.putObject("limit")
                 .put("type", "integer")
                 .put("minimum", 1)
@@ -81,7 +89,7 @@ public class GitTool implements McpTool {
                 .put("description", "log 返回条数，默认 10，最大 50。");
         props.putObject("stat")
                 .put("type", "boolean")
-                .put("description", "diff 是否只返回统计摘要，默认 false。");
+                .put("description", "diff 是否只返回统计摘要，默认 true。只有用户明确要求具体补丁时才设为 false。");
         props.putObject("paths")
                 .put("type", "array")
                 .put("description", "add/commit 要处理的显式仓库内路径列表。不能传 . 或空列表。")
@@ -110,7 +118,9 @@ public class GitTool implements McpTool {
         Path gitWorkspace = workspaceRoot(ctx);
         Path cwd;
         try {
-            cwd = resolvePath(gitWorkspace, stringArg(arguments, "path", "."));
+            cwd = "diff".equals(action)
+                    ? gitWorkspace
+                    : resolvePath(gitWorkspace, stringArg(arguments, "path", "."));
         } catch (IOException e) {
             return toJson(Map.of("error", e.getMessage()));
         }
@@ -121,7 +131,7 @@ public class GitTool implements McpTool {
             if (isWriteAction(action)) {
                 return executeWriteAction(action, arguments, gitWorkspace, cwd);
             }
-            command = buildCommand(action, arguments);
+            command = buildCommand(action, arguments, gitWorkspace);
         } catch (IllegalArgumentException e) {
             return toJson(Map.of("error", e.getMessage(), "action", action));
         }
@@ -133,14 +143,14 @@ public class GitTool implements McpTool {
         payload.put("command", command);
         payload.put("exit_code", result.exitCode());
         payload.put("timed_out", result.timedOut());
-        payload.put("output", result.output());
+        payload.put("output", maybeTruncateDiffOutput(action, result.output(), payload));
         if (result.exitCode() != 0 || result.timedOut()) {
             payload.put("error", "Git 命令执行失败");
         }
         return toJson(payload);
     }
 
-    private List<String> buildCommand(String action, Map<String, Object> arguments) {
+    private List<String> buildCommand(String action, Map<String, Object> arguments, Path gitWorkspace) {
         return switch (action) {
             case "root" -> List.of("git", "rev-parse", "--show-toplevel");
             case "status" -> List.of("git", "status", "--short", "--branch");
@@ -149,7 +159,7 @@ public class GitTool implements McpTool {
                 int limit = Math.max(1, Math.min(MAX_LOG_LIMIT, intArg(arguments, "limit", DEFAULT_LOG_LIMIT)));
                 yield List.of("git", "log", "--oneline", "--decorate", "--max-count=" + limit);
             }
-            case "diff" -> buildDiffCommand(arguments);
+            case "diff" -> buildDiffCommand(arguments, gitWorkspace);
             case "show" -> buildShowCommand(arguments);
             case "fetch" -> buildFetchCommand(arguments);
             default -> throw new IllegalArgumentException("不支持的 Git action: " + action);
@@ -288,20 +298,70 @@ public class GitTool implements McpTool {
         return writeResult("checkout_new_branch", cwd, results, commands);
     }
 
-    private List<String> buildDiffCommand(Map<String, Object> arguments) {
+    private List<String> buildDiffCommand(Map<String, Object> arguments, Path gitWorkspace) {
         List<String> command = new ArrayList<>();
         command.add("git");
         command.add("diff");
-        if (boolArg(arguments, "stat", false)) {
+        String scope = stringArg(arguments, "scope", "unstaged");
+        if (scope.isBlank()) {
+            scope = "unstaged";
+        }
+        if (!List.of("unstaged", "staged", "all").contains(scope)) {
+            throw new IllegalArgumentException("diff scope 只支持 unstaged、staged、all");
+        }
+        if ("staged".equals(scope)) {
+            command.add("--cached");
+        } else if ("all".equals(scope)) {
+            command.add("HEAD");
+        }
+        if (boolArg(arguments, "stat", true)) {
             command.add("--stat");
         }
         String target = stringArg(arguments, "target", "");
         if (!target.isBlank()) {
             rejectUnsafeArg(target, "target");
-            command.add("--");
             command.add(target);
         }
+        String path = stringArg(arguments, "path", "");
+        if (!path.isBlank() && !".".equals(path)) {
+            List<String> paths = normalizeDiffPaths(List.of(path), gitWorkspace);
+            command.add("--");
+            command.addAll(paths);
+        }
         return command;
+    }
+
+    private List<String> normalizeDiffPaths(List<String> values, Path gitWorkspace) {
+        var result = new ArrayList<String>();
+        for (String value : values) {
+            String path = value == null ? "" : value.strip();
+            if (path.isBlank() || ".".equals(path) || "./".equals(path)) {
+                continue;
+            }
+            rejectUnsafeArg(path, "path");
+            Path candidate = Path.of(path);
+            Path resolved = candidate.isAbsolute()
+                    ? candidate.toAbsolutePath().normalize()
+                    : gitWorkspace.resolve(candidate).normalize();
+            if (!resolved.startsWith(gitWorkspace)) {
+                throw new IllegalArgumentException("path 路径越界: " + path);
+            }
+            String relative = gitWorkspace.relativize(resolved).toString();
+            if (!relative.isBlank()) {
+                result.add(relative);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static String maybeTruncateDiffOutput(String action, String output, Map<String, Object> payload) {
+        if (!"diff".equals(action) || output == null || output.length() <= MAX_DIFF_OUTPUT_CHARS) {
+            return output;
+        }
+        payload.put("truncated", true);
+        payload.put("original_output_chars", output.length());
+        return output.substring(0, MAX_DIFF_OUTPUT_CHARS)
+                + "\n\n[diff output truncated; ask for a specific file diff if more detail is needed]\n";
     }
 
     private List<String> buildShowCommand(Map<String, Object> arguments) {

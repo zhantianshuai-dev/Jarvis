@@ -1,10 +1,13 @@
 ---
 name: git
-description: "Use the structured git tool to inspect repository state and safely create local commits. Load this skill before Git-related work."
+description: "Load only when the user explicitly asks to push to a remote repository. For status, diff, log, branch, show, or local commit, use the structured git tool directly and do not load this skill."
 metadata: {"vikingbot":{"requires":{"bins":["git"]}}}
+always: false
 ---
 
 # Git Skill
+
+Load this skill only for `git push` or clearly equivalent remote-publish requests. For read-only Git inspection such as `status`, `diff`, `log`, `branch`, or `show`, do not load this skill; call the structured `git` tool directly.
 
 Use the structured `git` tool for Git operations. Prefer it over the generic `exec` tool so policy hooks and path checks can protect the repository.
 

@@ -9,6 +9,17 @@ jarvis:
     api-key: ${LLM_API_KEY:}
     api-base: ${LLM_API_BASE:https://easyrouter.io}
     model: ${LLM_MODEL:deepseek-v4-pro}
+    log-request-body: ${JARVIS_LLM_LOG_REQUEST_BODY:false}
+
+  agent:
+    workspace: ${JARVIS_WORKSPACE:./workspace}
+    workspaces:
+      - id: jarvis
+        label: Jarvis workspace
+        path: ${JARVIS_WORKSPACE:./workspace}
+      - id: project
+        label: openViking project
+        path: ${JARVIS_PROJECT_WORKSPACE:.}
 
   auth:
     enabled: true

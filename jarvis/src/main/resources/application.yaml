@@ -30,6 +30,7 @@ jarvis:
     model: ${LLM_MODEL:deepseek-v4-pro}
     temperature: 0.0
     max-tokens: 8192
+    log-request-body: ${JARVIS_LLM_LOG_REQUEST_BODY:true}
 
   # ---- memory-service 连接 ----
   memory-service:
@@ -38,8 +39,15 @@ jarvis:
   # ---- Agent 运行参数 ----
   agent:
     name: Jarvis
-    max-iterations: 60
+    max-iterations: 20
     workspace: ${JARVIS_WORKSPACE:./workspace}
+    workspaces:
+      - id: jarvis
+        label: Jarvis workspace
+        path: ${JARVIS_WORKSPACE:./workspace}
+      - id: project
+        label: openViking project
+        path: ${JARVIS_PROJECT_WORKSPACE:.}
     system-prompt-template: |
 
       你叫Jarvis，是一个 AI Agent个人助手。你可以聊天、回答技术问题，也可以调用工具读取文件、编辑文件、执行命令、检索记忆、访问网页、创建定时任务和派生子任务。

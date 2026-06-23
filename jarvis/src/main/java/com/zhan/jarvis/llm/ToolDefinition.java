@@ -12,8 +12,16 @@ import java.util.Map;
 public record ToolDefinition(
     String name,
     String description,
-    Map<String, Object> inputSchema
+    Map<String, Object> inputSchema,
+    String group,
+    String source,
+    String schemaWeight,
+    boolean deferred
 ) {
+    public ToolDefinition(String name, String description, Map<String, Object> inputSchema) {
+        this(name, description, inputSchema, "general", "local", "medium", false);
+    }
+
     /** 转换为 OpenAI tools 格式 */
     public Map<String, Object> toOpenAiFormat() {
         return Map.of(
