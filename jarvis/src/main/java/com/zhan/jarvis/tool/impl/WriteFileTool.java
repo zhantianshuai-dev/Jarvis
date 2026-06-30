@@ -7,6 +7,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -54,9 +55,29 @@ public class WriteFileTool implements McpTool {
         }
         try {
             var filePath = sandboxManager.writeFile(ctx.effectiveWorkspaceDir(), relPath, content);
-            return "文件已写入: " + filePath + " (" + content.length() + " 字符)";
+            var result = new LinkedHashMap<String, Object>();
+            result.put("tool", name());
+            result.put("path", filePath.toString());
+            result.put("operation", "write");
+            result.put("content_chars", content.length());
+            result.put("content_omitted", true);
+            result.put("summary", "文件已写入，内容未展开。需要查看内容时请调用 read_file。");
+            return toJson(result);
         } catch (IOException e) {
-            return "写入文件失败: " + relPath + " — " + e.getMessage();
+            return toJson(Map.of(
+                    "tool", name(),
+                    "path", relPath,
+                    "success", false,
+                    "error", "写入文件失败: " + e.getMessage()
+            ));
+        }
+    }
+
+    private String toJson(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "{\"tool\":\"write_file\",\"success\":false,\"error\":\"JSON 序列化失败\"}";
         }
     }
 }

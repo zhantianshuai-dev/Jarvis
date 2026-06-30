@@ -7,6 +7,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -73,10 +74,30 @@ public class EditFileTool implements McpTool {
 
             String updated = content.substring(0, first) + newText + content.substring(first + oldText.length());
             var filePath = sandboxManager.writeFile(ctx.effectiveWorkspaceDir(), path, updated);
-            return "文件已编辑: " + filePath + " (替换 " + oldText.length() + " 字符为 "
-                    + newText.length() + " 字符)";
+            var result = new LinkedHashMap<String, Object>();
+            result.put("tool", name());
+            result.put("path", filePath.toString());
+            result.put("operation", "replace");
+            result.put("old_chars", oldText.length());
+            result.put("new_chars", newText.length());
+            result.put("content_omitted", true);
+            result.put("summary", "文件已编辑，替换内容未展开。需要查看内容时请调用 read_file。");
+            return toJson(result);
         } catch (IOException e) {
-            return "编辑文件失败: " + path + " — " + e.getMessage();
+            return toJson(Map.of(
+                    "tool", name(),
+                    "path", path,
+                    "success", false,
+                    "error", "编辑文件失败: " + e.getMessage()
+            ));
+        }
+    }
+
+    private String toJson(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "{\"tool\":\"edit_file\",\"success\":false,\"error\":\"JSON 序列化失败\"}";
         }
     }
 }

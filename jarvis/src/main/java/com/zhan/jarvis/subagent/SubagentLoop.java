@@ -4,6 +4,7 @@ import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.llm.*;
 import com.zhan.jarvis.memory.MemoryServiceClient;
 import com.zhan.jarvis.tool.ToolContext;
+import com.zhan.jarvis.tool.ToolPayloadSanitizer;
 import com.zhan.jarvis.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +38,7 @@ public class SubagentLoop {
     private final SessionKey parentSessionKey;
     private final String parentUserId;
     private final Map<String, Object> metadata;
+    private final ToolPayloadSanitizer toolPayloadSanitizer;
 
     public SubagentLoop(String taskId, String task, ToolRegistry toolRegistry, AgentLLMProvider llmProvider,
                          MemoryServiceClient memoryClient, ObjectMapper objectMapper,
@@ -53,6 +55,7 @@ public class SubagentLoop {
         this.parentSessionKey = parentSessionKey;
         this.parentUserId = parentUserId == null || parentUserId.isBlank() ? "subagent" : parentUserId;
         this.metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+        this.toolPayloadSanitizer = new ToolPayloadSanitizer(objectMapper);
     }
 
     public String taskId() { return taskId; }
@@ -94,7 +97,9 @@ public class SubagentLoop {
                 ChatResponse response = llmProvider.chat(messages, restrictedTools);
 
                 if (response.hasToolCalls()) {
-                    messages.add(Message.assistant(response.toolCalls(), response.reasoningContent()));
+                    messages.add(Message.assistant(
+                            toolPayloadSanitizer.sanitizeToolCalls(response.toolCalls()),
+                            response.reasoningContent()));
 
                     for (var tc : response.toolCalls()) {
                         try {

@@ -64,6 +64,13 @@ public class SubagentManager {
      */
     public SpawnHandle spawn(String task, String parentSessionId, SessionKey parentSessionKey, String parentUserId,
                              Map<String, Object> parentMetadata, boolean createWorktree, String worktreeName) {
+        return spawn(task, parentSessionId, parentSessionKey, parentUserId, parentMetadata,
+                createWorktree, worktreeName, true);
+    }
+
+    public SpawnHandle spawn(String task, String parentSessionId, SessionKey parentSessionKey, String parentUserId,
+                             Map<String, Object> parentMetadata, boolean createWorktree, String worktreeName,
+                             boolean persistChatStatusOnCompletion) {
         //新建taskID
         String taskId = UUID.randomUUID().toString();
         try {
@@ -130,13 +137,17 @@ public class SubagentManager {
             if ("completed".equals(result.status())) {
                 publishSubagentStatus(parentSessionId, taskId, task, "completed",
                         boundWorktreeName, boundWorktreePath, result.result(), "");
-                persistSubagentChatStatus(parentSessionId, taskId, task, "completed",
-                        boundWorktreeName, result.result(), "");
+                if (persistChatStatusOnCompletion) {
+                    persistSubagentChatStatus(parentSessionId, taskId, task, "completed",
+                            boundWorktreeName, result.result(), "");
+                }
             } else if ("failed".equals(result.status())) {
                 publishSubagentStatus(parentSessionId, taskId, task, "failed",
                         boundWorktreeName, boundWorktreePath, "", result.error());
-                persistSubagentChatStatus(parentSessionId, taskId, task, "failed",
-                        boundWorktreeName, "", result.error());
+                if (persistChatStatusOnCompletion) {
+                    persistSubagentChatStatus(parentSessionId, taskId, task, "failed",
+                            boundWorktreeName, "", result.error());
+                }
             }
             log.info("[SubagentManager] 子 Agent 完成: taskId={}, status={}", taskId, result.status());
         });

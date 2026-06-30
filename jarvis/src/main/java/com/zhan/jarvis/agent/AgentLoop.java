@@ -23,6 +23,7 @@ import com.zhan.jarvis.permission.PendingToolPermission;
 import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.tool.ToolContext;
+import com.zhan.jarvis.tool.ToolPayloadSanitizer;
 import com.zhan.jarvis.tool.ToolRegistry;
 import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.slf4j.Logger;
@@ -52,6 +53,7 @@ public class AgentLoop {
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
     private static final int MAX_VISIBLE_TOOL_RESULT_CHARS = 8_000;
     private static final int MAX_VISIBLE_TOOL_FILES = 30;
+    private static final long TOOL_EXECUTION_TIMEOUT_SECONDS = 330;
 
     private final JarvisConfig.AgentConfig agentConfig;
     private final AgentLLMProvider llmProvider;
@@ -62,6 +64,7 @@ public class AgentLoop {
     private final HookManager hookManager;
     private final AgentCheckpointStore checkpointStore;
     private final WorkspaceResolver workspaceResolver;
+    private final ToolPayloadSanitizer toolPayloadSanitizer;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -99,6 +102,7 @@ public class AgentLoop {
         this.hookManager = hookManager;
         this.checkpointStore = checkpointStore;
         this.workspaceResolver = workspaceResolver;
+        this.toolPayloadSanitizer = new ToolPayloadSanitizer(objectMapper);
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -126,15 +130,15 @@ public class AgentLoop {
                 ? pending.sessionKey()
                 : new SessionKey("http", "tool-confirm", sessionId);
 
-        sessionManager.addMessage(sessionId, "tool", toolResult, Map.of(
-                "source", "Jarvis",
-                "trace", true,
-                "trace_type", "confirmed_tool_result",
-                "confirm_id", pending.confirmId(),
-                "tool_name", pending.toolName(),
-                "arguments", pending.arguments(),
-                "confirmed_by", confirmedBy != null ? confirmedBy : ""
-        ));
+        var confirmedMetadata = new LinkedHashMap<String, Object>();
+        confirmedMetadata.put("source", "Jarvis");
+        confirmedMetadata.put("trace", true);
+        confirmedMetadata.put("trace_type", "confirmed_tool_result");
+        confirmedMetadata.put("confirm_id", pending.confirmId());
+        confirmedMetadata.put("tool_name", pending.toolName());
+        confirmedMetadata.put("arguments", toolPayloadSanitizer.sanitizeArgumentMap(pending.toolName(), pending.arguments()));
+        confirmedMetadata.put("confirmed_by", confirmedBy != null ? confirmedBy : "");
+        sessionManager.addMessage(sessionId, "tool", toolResult, confirmedMetadata);
 
         //这个位置去取checkpoint
         AgentCheckpoint checkpoint = checkpointStore != null
@@ -298,16 +302,18 @@ public class AgentLoop {
                     response.hasToolCalls() ? response.toolCalls().size() : 0);
 
             if (response.hasToolCalls()) {
+                var sanitizedToolCalls = toolPayloadSanitizer.sanitizeToolCalls(response.toolCalls());
                 for (var tc : response.toolCalls()) {
-                    log.info("[AgentLoop] 第{}轮工具调用: {}({})", iteration, tc.name(), tc.arguments());
-                    observer.onToolCall(state, iteration, tc);
+                    log.info("[AgentLoop] 第{}轮工具调用: {}({})", iteration, tc.name(),
+                            toolPayloadSanitizer.loggableArguments(tc.name(), tc.arguments()));
+                    observer.onToolCall(state, iteration, toolPayloadSanitizer.sanitizeToolCall(tc));
                 }
                 //当前工具结果加入到当前上下文
-                state.messages().add(Message.assistant(response.toolCalls(), response.reasoningContent()));
+                state.messages().add(Message.assistant(sanitizedToolCalls, response.reasoningContent()));
                 //发送到memory-service中进行持久化，然后自动生成摘要，提取记忆
                 sessionManager.addMessage(state.sessionId(), "assistant",
                         "",
-                        toolCallsMetadata(iteration, response.toolCalls()));
+                        toolCallsMetadata(iteration, sanitizedToolCalls));
 
                 var toolResults = executeToolsInParallel(response.toolCalls(), state.sessionKey(),
                         state.sessionId(), state.userId(), state.metadata());
@@ -454,7 +460,9 @@ public class AgentLoop {
             sessionManager.addMessage(state.sessionId(), "tool", visibleResult,
                     toolResultMetadata(iteration, result, visibleResult));
             observer.onToolResult(state, iteration,
-                    new ToolResult(result.toolCallId(), result.toolName(), result.arguments(), visibleResult));
+                    new ToolResult(result.toolCallId(), result.toolName(),
+                            toolPayloadSanitizer.sanitizeArguments(result.toolName(), result.arguments()),
+                            visibleResult));
         }
     }
 
@@ -507,7 +515,7 @@ public class AgentLoop {
 
         for (var t : tasks) {
             try {
-                t.join(Duration.ofSeconds(120).toMillis());
+                t.join(Duration.ofSeconds(TOOL_EXECUTION_TIMEOUT_SECONDS).toMillis());
                 if (t.isAlive()) {
                     var tc = callByThread.get(t);
                     log.warn("工具执行超时: callId={}", tc != null ? tc.id() : "");
@@ -516,7 +524,7 @@ public class AgentLoop {
                                 tc != null ? tc.id() : "",
                                 tc != null ? tc.name() : "",
                                 tc != null ? tc.arguments() : "{}",
-                                "工具执行超时（120秒）"
+                                "工具执行超时（" + TOOL_EXECUTION_TIMEOUT_SECONDS + "秒）"
                         ));
                     }
                 }
@@ -654,13 +662,7 @@ public class AgentLoop {
         metadata.put("trace_type", "assistant_tool_calls");
         metadata.put("iteration", iteration);
         metadata.put("tool_calls", toolCalls.stream()
-                .map(tc -> {
-                    var item = new LinkedHashMap<String, Object>();
-                    item.put("id", tc.id());
-                    item.put("name", tc.name());
-                    item.put("arguments", tc.arguments());
-                    return item;
-                })
+                .map(toolPayloadSanitizer::toolCallMetadata)
                 .toList());
         return metadata;
     }
@@ -775,7 +777,7 @@ public class AgentLoop {
         metadata.put("iteration", iteration);
         metadata.put("tool_call_id", result.toolCallId());
         metadata.put("tool_name", result.toolName());
-        metadata.put("arguments", result.arguments());
+        metadata.put("arguments", toolPayloadSanitizer.sanitizeArguments(result.toolName(), result.arguments()));
         metadata.put("raw_result_length", result.result() != null ? result.result().length() : 0);
         metadata.put("visible_result_length", visibleResult != null ? visibleResult.length() : 0);
         metadata.put("compressed", result.result() != null && !Objects.equals(result.result(), visibleResult));

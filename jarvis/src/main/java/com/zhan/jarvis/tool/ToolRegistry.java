@@ -33,6 +33,7 @@ public class ToolRegistry {
     private final HookManager hookManager;
     private final ToolPermissionManager permissionManager;
     private final ObjectMapper objectMapper;
+    private final ToolPayloadSanitizer toolPayloadSanitizer;
 
     public ToolRegistry(LocalMcpServer localServer, List<McpClient> externalClients) {
         this(localServer, externalClients, null, null, null);
@@ -49,6 +50,7 @@ public class ToolRegistry {
         this.hookManager = hookManager;
         this.permissionManager = permissionManager;
         this.objectMapper = objectMapper;
+        this.toolPayloadSanitizer = objectMapper != null ? new ToolPayloadSanitizer(objectMapper) : null;
         log.info("ToolRegistry 初始化: {} 个本地工具, {} 个外部 MCP Client",
                 localServer.toolCount(), this.externalClients.size());
     }
@@ -150,7 +152,7 @@ public class ToolRegistry {
         //这里触发工具事件
         var prePayload = new java.util.LinkedHashMap<String, Object>();
         prePayload.put("tool_name", name);
-        prePayload.put("arguments", arguments == null ? Map.of() : arguments);
+        prePayload.put("arguments", sanitizeArgumentsForEvent(name, arguments));
         prePayload.put("channel_type", ctx.sessionKey() != null ? ctx.sessionKey().channelType() : "");
         prePayload.put("metadata", ctx.metadata() == null ? Map.of() : ctx.metadata());
         //触发Hook
@@ -450,5 +452,15 @@ public class ToolRegistry {
         } catch (Exception e) {
             return "{\"error\":\"JSON 序列化失败\"}";
         }
+    }
+
+    private Map<String, Object> sanitizeArgumentsForEvent(String toolName, Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return Map.of();
+        }
+        if (toolPayloadSanitizer == null) {
+            return arguments;
+        }
+        return toolPayloadSanitizer.sanitizeArgumentMap(toolName, arguments);
     }
 }
