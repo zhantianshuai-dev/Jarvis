@@ -1,6 +1,8 @@
 package com.zhan.memoryservice.server.router;
 
 import com.zhan.memoryservice.session.SessionService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.server.RouterFunction;
@@ -19,6 +21,8 @@ import static org.springframework.web.reactive.function.server.RouterFunctions.r
 @Configuration
 public class SessionRouter {
 
+    private static final Logger log = LoggerFactory.getLogger(SessionRouter.class);
+
     private final SessionService sessionService;
 
     public SessionRouter(SessionService sessionService) {
@@ -34,6 +38,7 @@ public class SessionRouter {
                 .GET("/api/v1/session/list", this::handleList)
                 .GET("/api/v1/session/{id}/messages", this::handleMessages)
                 .GET("/api/v1/session/{id}/context", this::handleContext)
+                .DELETE("/api/v1/session/{id}", this::handleDelete)
                 .build();
     }
 
@@ -110,5 +115,27 @@ public class SessionRouter {
         return Mono.fromCallable(() -> sessionService.getSessionContext(sessionId, maxMessages))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(result -> ServerResponse.ok().bodyValue(result));
+    }
+
+    private Mono<ServerResponse> handleDelete(ServerRequest req) {
+        String sessionId = req.pathVariable("id");
+        String ownerUserId = req.queryParam("owner_user_id").orElse("");
+        log.info("收到 memory-service 删除会话请求: sessionId={}, ownerUserId={}, remote={}",
+                sessionId, ownerUserId, req.remoteAddress().map(Object::toString).orElse("unknown"));
+        return Mono.fromCallable(() -> sessionService.deleteSession(sessionId, ownerUserId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(result -> {
+                    log.info("memory-service 删除会话完成: sessionId={}, ownerUserId={}, result={}",
+                            sessionId, ownerUserId, result);
+                    return ServerResponse.ok().bodyValue(result);
+                })
+                .onErrorResume(NoSuchElementException.class, e ->
+                        ServerResponse.notFound().build())
+                .onErrorResume(SecurityException.class, e ->
+                        ServerResponse.status(403).bodyValue(Map.of(
+                                "code", 403,
+                                "msg", e.getMessage(),
+                                "success", false
+                        )));
     }
 }

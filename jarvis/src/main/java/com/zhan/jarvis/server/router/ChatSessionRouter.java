@@ -4,6 +4,8 @@ import cn.hutool.core.util.IdUtil;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.memory.MemoryServiceClient;
 import com.zhan.jarvis.session.SessionManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,7 @@ import reactor.core.scheduler.Schedulers;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.springframework.web.reactive.function.server.RequestPredicates.DELETE;
 import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
 import static org.springframework.web.reactive.function.server.RequestPredicates.POST;
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
@@ -28,6 +31,8 @@ import static org.springframework.web.reactive.function.server.RouterFunctions.r
 @Configuration
 public class ChatSessionRouter {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatSessionRouter.class);
+
     private final SessionManager sessionManager;
 
     public ChatSessionRouter(SessionManager sessionManager) {
@@ -38,7 +43,8 @@ public class ChatSessionRouter {
     public RouterFunction<ServerResponse> chatSessionRoute() {
         return route(GET("/api/v1/chat/sessions"), this::handleList)
                 .andRoute(POST("/api/v1/chat/sessions"), this::handleCreate)
-                .andRoute(GET("/api/v1/chat/sessions/{sessionId}/messages"), this::handleMessages);
+                .andRoute(GET("/api/v1/chat/sessions/{sessionId}/messages"), this::handleMessages)
+                .andRoute(DELETE("/api/v1/chat/sessions/{sessionId}"), this::handleDelete);
     }
 
     private Mono<ServerResponse> handleList(ServerRequest req) {
@@ -82,6 +88,30 @@ public class ChatSessionRouter {
                 .onErrorResume(WebClientResponseException.NotFound.class, e ->
                         ServerResponse.status(HttpStatus.NOT_FOUND)
                                 .bodyValue(Map.of("code", 404, "msg", "会话不存在", "success", false)));
+    }
+
+    private Mono<ServerResponse> handleDelete(ServerRequest req) {
+        String userId = currentUserId(req);
+        String sessionId = req.pathVariable("sessionId");
+        log.info("收到删除会话请求: sessionId={}, userId={}, remote={}",
+                sessionId, userId, req.remoteAddress().map(Object::toString).orElse("unknown"));
+        return Mono.fromCallable(() -> sessionManager.deleteSession(sessionId, userId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(deleted -> {
+                    log.info("删除会话请求完成: sessionId={}, userId={}, deleted={}",
+                            sessionId, userId, deleted);
+                    return ServerResponse.ok().bodyValue(Map.of(
+                            "sessionId", sessionId,
+                            "deleted", deleted,
+                            "success", true
+                    ));
+                })
+                .onErrorResume(WebClientResponseException.NotFound.class, e ->
+                        ServerResponse.status(HttpStatus.NOT_FOUND)
+                                .bodyValue(Map.of("code", 404, "msg", "会话不存在", "success", false)))
+                .onErrorResume(WebClientResponseException.Forbidden.class, e ->
+                        ServerResponse.status(HttpStatus.FORBIDDEN)
+                                .bodyValue(Map.of("code", 403, "msg", "无权删除该会话", "success", false)));
     }
 
     private Map<String, Object> sessionView(MemoryServiceClient.SessionSummary summary) {

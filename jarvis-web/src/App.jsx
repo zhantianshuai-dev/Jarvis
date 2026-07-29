@@ -5,8 +5,10 @@ import {
   ArrowUp,
   Check,
   Bot,
+  CircleArrowUp,
+  CircleHelp,
+  TriangleAlert,
   ChevronDown,
-  Clipboard,
   Folder,
   GitBranch,
   Globe,
@@ -24,17 +26,19 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   Sparkles,
+  Palette,
   Trash2,
   UserRound,
   X,
 } from 'lucide-react';
 import {
   apiBase,
-  changePassword,
   confirmTool,
   createChatSession,
   createWorktree,
+  deleteChatSession,
   deleteWorktree,
   getChatSessionMessages,
   keepWorktree,
@@ -52,6 +56,8 @@ const TOKEN_KEY = 'jarvis.access_token';
 const USER_KEY = 'jarvis.user';
 const SESSION_KEY = 'jarvis.chat_session_id';
 const WORKSPACE_KEY = 'jarvis.workspace_id';
+const DEEPSEEK_V4_FLASH_CONTEXT_WINDOW = 1_048_576;
+const JARVIS_ICON = '/favicon.svg';
 const RUN_MODES = [
   { value: 'chat', label: 'Chat', command: '/chat' },
   { value: 'agent', label: 'Agent', command: '/agent' },
@@ -170,29 +176,31 @@ function formatConfirmResult(result) {
   }
 }
 
-function normalizeTokenUsage(value = {}) {
+function normalizeContextUsage(value = {}) {
   const raw = value.token_usage || value.tokenUsage || value.usage || value;
-  const prompt = Number(raw?.prompt_tokens ?? raw?.promptTokens ?? 0);
-  const completion = Number(raw?.completion_tokens ?? raw?.completionTokens ?? 0);
-  const total = Number(raw?.total_tokens ?? raw?.totalTokens ?? prompt + completion);
-  if (!prompt && !completion && !total) {
+  const context = Number(raw?.context_tokens ?? raw?.contextTokens ?? raw?.prompt_tokens ?? raw?.promptTokens ?? 0);
+  if (!context) {
     return null;
   }
   return {
-    promptTokens: prompt,
-    completionTokens: completion,
-    totalTokens: total,
+    contextTokens: context,
+    contextWindow: DEEPSEEK_V4_FLASH_CONTEXT_WINDOW,
   };
 }
 
-function TokenUsageLine({ usage }) {
+function formatContextTokens(tokens) {
+  if (tokens >= 1_048_576) return `${Math.round(tokens / 1_048_576)}M`;
+  return `${Math.round(tokens / 1_024)}K`;
+}
+
+function ContextUsageLine({ usage }) {
   if (!usage) return null;
   return (
-    <div className="token-usage-line">
-      <span>Tokens</span>
-      <span>输入 {usage.promptTokens}</span>
-      <span>输出 {usage.completionTokens}</span>
-      <span>总计 {usage.totalTokens}</span>
+    <div
+      className="context-usage-line"
+      title={`当前上下文 ${usage.contextTokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`}
+    >
+      {formatContextTokens(usage.contextTokens)}/{formatContextTokens(usage.contextWindow)}
     </div>
   );
 }
@@ -213,7 +221,7 @@ function normalizeChatMessages(items = []) {
         role: item.role,
         content: item.content || '',
         createdAt: item.createdAt,
-        tokenUsage: item.role === 'assistant' ? normalizeTokenUsage(item) : null,
+        tokenUsage: item.role === 'assistant' ? normalizeContextUsage(item) : null,
         confirmation: item.role === 'assistant' ? extractToolConfirmation(item.content || '', item) : null,
       };
     });
@@ -329,17 +337,18 @@ export default function App() {
   const [mode, setMode] = useState('login');
   const [session, setSession] = useState(null);
   const [authForm, setAuthForm] = useState({ username: '', password: '', displayName: '' });
-  const [passwordForm, setPasswordForm] = useState({ oldPassword: '', newPassword: '' });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem('jarvis.theme') || 'light');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [copied, setCopied] = useState(false);
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(SESSION_KEY) || createSessionId());
   const [messages, setMessages] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState('');
+  const [conversationPendingDelete, setConversationPendingDelete] = useState(null);
   const [draft, setDraft] = useState('');
   const [chatError, setChatError] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
@@ -485,6 +494,20 @@ export default function App() {
     }
   }, [authState, session?.token, activeView]);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('jarvis.theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!conversationPendingDelete) return undefined;
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setConversationPendingDelete(null);
+    }
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [conversationPendingDelete]);
+
   const isRegister = mode === 'register';
   const submitText = useMemo(() => {
     if (busy) return isRegister ? '正在创建...' : '正在登录...';
@@ -561,10 +584,6 @@ export default function App() {
     setAuthForm((current) => ({ ...current, [event.target.name]: event.target.value }));
   }
 
-  function updatePasswordField(event) {
-    setPasswordForm((current) => ({ ...current, [event.target.name]: event.target.value }));
-  }
-
   function updateWorktreeField(event) {
     setWorktreeForm((current) => ({ ...current, [event.target.name]: event.target.value }));
   }
@@ -574,7 +593,6 @@ export default function App() {
     setBusy(true);
     setError('');
     setNotice('');
-    setCopied(false);
     try {
       const result = isRegister
         ? await register(authForm)
@@ -639,7 +657,7 @@ export default function App() {
         },
         onDone: (data) => {
           if (!data?.content) return;
-          const tokenUsage = normalizeTokenUsage(data);
+          const tokenUsage = normalizeContextUsage(data);
           setMessages((current) =>
             current.map((message) =>
               message.id === assistantId
@@ -750,6 +768,46 @@ export default function App() {
     await createAndOpenConversation(session.token);
   }
 
+  function requestConversationDelete(conversation) {
+    if (!session?.token || chatBusy || historyBusy || deletingConversationId) return;
+    setConversationPendingDelete(conversation);
+  }
+
+  async function deleteConversation(conversation) {
+    if (!session?.token || !conversation) return;
+
+    const deletingActiveConversation = conversation.sessionId === sessionId;
+    setDeletingConversationId(conversation.sessionId);
+    setChatError('');
+    try {
+      await deleteChatSession(session.token, conversation.sessionId);
+      const remaining = conversations.filter((item) => item.sessionId !== conversation.sessionId);
+      setConversations(remaining);
+
+      if (deletingActiveConversation) {
+        const nextConversation = remaining[0];
+        if (nextConversation) {
+          await loadConversation(session.token, nextConversation.sessionId);
+        } else {
+          await createAndOpenConversation(session.token);
+        }
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        clearStoredSession();
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+        setSessionId('');
+        setConversations([]);
+        setAuthState('anonymous');
+      } else {
+        setChatError(err.message || '删除会话失败');
+      }
+    } finally {
+      setDeletingConversationId('');
+    }
+  }
+
   async function openWorktrees() {
     if (!session?.token) return;
     setActiveView('worktrees');
@@ -837,12 +895,6 @@ export default function App() {
     }
   }
 
-  async function copyToken() {
-    await navigator.clipboard.writeText(session.token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
-  }
-
   async function handleLogout() {
     setBusy(true);
     try {
@@ -860,31 +912,6 @@ export default function App() {
       setMessages([]);
       setConversations([]);
       setSessionId('');
-      setPasswordForm({ oldPassword: '', newPassword: '' });
-    }
-  }
-
-  async function submitPassword(event) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      await changePassword(session.token, passwordForm);
-      clearStoredSession();
-      setSession(null);
-      setAuthState('anonymous');
-      setPasswordForm({ oldPassword: '', newPassword: '' });
-      setNotice('密码已修改，请使用新密码重新登录。');
-    } catch (err) {
-      if (err.status === 401) {
-        clearStoredSession();
-        setSession(null);
-        setAuthState('anonymous');
-      }
-      setError(err.message || '修改密码失败');
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -892,7 +919,7 @@ export default function App() {
     return (
       <main className="auth-page">
         <section className="auth-card">
-          <div className="auth-logo">J</div>
+          <div className="auth-logo"><img src={JARVIS_ICON} alt="Jarvis" /></div>
           <h1>正在检查登录状态</h1>
           <p>请稍候...</p>
         </section>
@@ -906,7 +933,7 @@ export default function App() {
         <aside className={`chat-sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
           <div className="sidebar-top">
             <button className="brand-button" type="button" aria-label="Jarvis">
-              <Bot size={22} />
+              <img className="jarvis-brand-icon" src={JARVIS_ICON} alt="" />
             </button>
             <button className="icon-button" type="button" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="折叠侧栏">
               {sidebarOpen ? <PanelLeftClose size={20} /> : <Menu size={20} />}
@@ -955,16 +982,26 @@ export default function App() {
                   </button>
                 ) : (
                   conversations.map((conversation) => (
-                    <button
-                      className={`conversation-item ${conversation.sessionId === sessionId ? 'active' : ''}`}
-                      type="button"
-                      key={conversation.sessionId}
-                      disabled={historyBusy || chatBusy}
-                      onClick={() => loadConversation(session.token, conversation.sessionId)}
-                    >
-                      <span>{conversation.title || '新的对话'}</span>
-                      <MoreHorizontal size={16} />
-                    </button>
+                    <div className="conversation-row" key={conversation.sessionId}>
+                      <button
+                        className={`conversation-item ${conversation.sessionId === sessionId ? 'active' : ''}`}
+                        type="button"
+                        disabled={historyBusy || chatBusy || Boolean(deletingConversationId)}
+                        onClick={() => loadConversation(session.token, conversation.sessionId)}
+                      >
+                        <span>{conversation.title || '新的对话'}</span>
+                      </button>
+                      <button
+                        className="conversation-delete"
+                        type="button"
+                        aria-label={`删除会话：${conversation.title || '新的对话'}`}
+                        title="删除会话"
+                        disabled={historyBusy || chatBusy || Boolean(deletingConversationId)}
+                        onClick={() => requestConversationDelete(conversation)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -1120,8 +1157,8 @@ export default function App() {
             ) : (
               messages.map((message) => (
                 <article className={`message-row ${message.role}`} key={message.id}>
-                  <div className="message-avatar">
-                    {message.role === 'user' ? firstName(session.user).slice(0, 1).toUpperCase() : 'J'}
+                  <div className={`message-avatar ${message.role === 'assistant' ? 'jarvis-message-avatar' : ''}`}>
+                    {message.role === 'user' ? firstName(session.user).slice(0, 1).toUpperCase() : <img src={JARVIS_ICON} alt="Jarvis" />}
                   </div>
                   <div className="message-body">
                     {message.role === 'assistant' ? (
@@ -1195,7 +1232,7 @@ export default function App() {
                               </button>
                             </div>
                           )}
-                          <TokenUsageLine usage={message.tokenUsage} />
+                          <ContextUsageLine usage={message.tokenUsage} />
                         </>
                       ) : (
                         <div className="thinking">正在思考</div>
@@ -1209,7 +1246,7 @@ export default function App() {
             )}
             {chatBusy && messages[messages.length - 1]?.role !== 'assistant' && (
               <article className="message-row assistant">
-                <div className="message-avatar">J</div>
+                <div className="message-avatar jarvis-message-avatar"><img src={JARVIS_ICON} alt="Jarvis" /></div>
                 <div className="message-body thinking">正在思考</div>
               </article>
             )}
@@ -1408,8 +1445,57 @@ export default function App() {
           )}
         </section>
 
+        {conversationPendingDelete && (
+          <div
+            className="confirm-dialog-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setConversationPendingDelete(null);
+            }}
+          >
+            <section
+              className="confirm-dialog"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-conversation-title"
+              aria-describedby="delete-conversation-description"
+            >
+              <div className="confirm-dialog-head">
+                <span className="confirm-dialog-icon"><TriangleAlert size={24} /></span>
+                <h2 id="delete-conversation-title">删除会话</h2>
+              </div>
+              <p id="delete-conversation-description">
+                确认后将永久删除“{conversationPendingDelete.title || '新的对话'}”及其聊天记录，且无法恢复。
+              </p>
+              <div className="confirm-dialog-actions">
+                <button
+                  className="confirm-dialog-cancel"
+                  type="button"
+                  autoFocus
+                  disabled={Boolean(deletingConversationId)}
+                  onClick={() => setConversationPendingDelete(null)}
+                >
+                  取消
+                </button>
+                <button
+                  className="confirm-dialog-delete"
+                  type="button"
+                  disabled={Boolean(deletingConversationId)}
+                  onClick={async () => {
+                    const conversation = conversationPendingDelete;
+                    setConversationPendingDelete(null);
+                    await deleteConversation(conversation);
+                  }}
+                >
+                  {deletingConversationId ? '正在删除...' : '确认删除'}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
         {accountOpen && (
-          <div className="account-popover">
+          <div className="account-popover" role="dialog" aria-label="账户菜单">
             <div className="popover-head">
               <div>
                 <strong>{firstName(session.user)}</strong>
@@ -1420,44 +1506,29 @@ export default function App() {
               </button>
             </div>
 
-            <div className="token-block">
-              <label>Authorization</label>
-              <code>{`${session.tokenType || 'Bearer'} ${session.token}`}</code>
-              <button type="button" onClick={copyToken}>
-                <Clipboard size={16} />
-                {copied ? '已复制' : '复制 token'}
+            <div className="account-menu">
+              <button className="account-menu-row" type="button">
+                <Settings size={18} />
+                <span>设置</span>
+              </button>
+              <div className="account-menu-row appearance-row">
+                <span className="account-menu-label"><Palette size={18} />外观</span>
+                <span className="theme-switch" role="group" aria-label="选择外观">
+                  <button className={theme === 'light' ? 'active' : ''} type="button" onClick={() => setTheme('light')}>浅色</button>
+                  <button className={theme === 'dark' ? 'active' : ''} type="button" onClick={() => setTheme('dark')}>深色</button>
+                </span>
+              </div>
+              <button className="account-menu-row" type="button">
+                <CircleHelp size={18} />
+                <span>帮助与反馈</span>
+              </button>
+              <button className="account-menu-row" type="button">
+                <CircleArrowUp size={18} />
+                <span>检查更新</span>
               </button>
             </div>
 
-            <form className="password-mini-form" onSubmit={submitPassword}>
-              <label>
-                原密码
-                <input
-                  name="oldPassword"
-                  type="password"
-                  value={passwordForm.oldPassword}
-                  onChange={updatePasswordField}
-                  required
-                />
-              </label>
-              <label>
-                新密码
-                <input
-                  name="newPassword"
-                  type="password"
-                  value={passwordForm.newPassword}
-                  onChange={updatePasswordField}
-                  minLength={8}
-                  required
-                />
-              </label>
-              {error && <div className="inline-error">{error}</div>}
-              <button className="dark-button" type="submit" disabled={busy}>
-                修改密码
-              </button>
-            </form>
-
-            <button className="logout-row" type="button" onClick={handleLogout} disabled={busy}>
+            <button className="logout-row account-menu-row" type="button" onClick={handleLogout} disabled={busy}>
               <LogOut size={17} />
               退出登录
             </button>
@@ -1470,7 +1541,7 @@ export default function App() {
   return (
     <main className="auth-page">
       <section className="auth-card">
-        <div className="auth-logo">J</div>
+        <div className="auth-logo"><img src={JARVIS_ICON} alt="Jarvis" /></div>
         <h1>{isRegister ? '创建你的账号' : '欢迎回来'}</h1>
 
         {notice && <div className="success-box">{notice}</div>}

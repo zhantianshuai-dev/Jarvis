@@ -171,6 +171,27 @@ public class MemoryServiceClient {
         }
     }
 
+    public boolean deleteSession(String sessionId, String ownerUserId) {
+        String json = webClient.delete()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/api/v1/session/{id}")
+                        .queryParam("owner_user_id", ownerUserId != null ? ownerUserId : "")
+                        .build(sessionId))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+        if (json == null || json.isBlank()) {
+            return true;
+        }
+        try {
+            var node = objectMapper.readTree(json);
+            return !node.has("deleted") || node.get("deleted").asBoolean();
+        } catch (Exception e) {
+            log.warn("解析 session delete 结果失败: {}", e.getMessage());
+            return true;
+        }
+    }
+
     /**
      * 获取会话上下文（对标 Jarvis get_session_context）。
      * 返回 working_memory + 最近 N 条消息。

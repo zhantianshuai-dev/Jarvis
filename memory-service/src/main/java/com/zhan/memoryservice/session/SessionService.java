@@ -204,6 +204,22 @@ public class SessionService {
         return result;
     }
 
+    public Map<String, Object> deleteSession(String sessionId, String ownerUserId) {
+        var session = store.get(sessionId);
+        if (ownerUserId != null && !ownerUserId.isBlank()
+                && session.ownerUserId() != null && !session.ownerUserId().isBlank()
+                && !ownerUserId.equals(session.ownerUserId())) {
+            throw new SecurityException("无权删除该会话");
+        }
+
+        boolean deleted = store.deleteSession(sessionId);
+        return Map.of(
+                "session_id", sessionId,
+                "deleted", deleted,
+                "success", true
+        );
+    }
+
     // ---- Phase 2: 记忆提取（后台） ----
 
     private void runMemoryExtraction(String sessionId, int archiveIndex, List<Message> messages) {

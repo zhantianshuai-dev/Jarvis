@@ -33,6 +33,9 @@ public interface SessionStore {
     /** 删除指定消息（commit 归档后） */
     void deleteMessages(String sessionId, List<String> messageIds);
 
+    /** 删除整个会话目录及其消息、元数据和归档文件 */
+    boolean deleteSession(String sessionId);
+
     /** 获取消息总数 */
     int messageCount(String sessionId);
 

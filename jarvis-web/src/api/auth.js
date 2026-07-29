@@ -87,6 +87,13 @@ export function getChatSessionMessages(token, sessionId) {
   });
 }
 
+export function deleteChatSession(token, sessionId) {
+  return request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+    token,
+  });
+}
+
 export function listWorktrees(token) {
   return request('/api/v1/git/worktrees', { method: 'GET', token });
 }

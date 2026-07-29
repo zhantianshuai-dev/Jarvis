@@ -148,6 +148,31 @@ public class JsonlSessionStore implements SessionStore {
     }
 
     @Override
+    public boolean deleteSession(String sessionId) {
+        Path dir = sessionDir(sessionId);
+        if (!Files.exists(dir)) {
+            cache.remove(sessionId);
+            return false;
+        }
+
+        try (var stream = Files.walk(dir)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException e) {
+                            throw new RuntimeException("删除会话文件失败: " + path, e);
+                        }
+                    });
+            cache.remove(sessionId);
+            log.info("会话历史已删除: {}", dir);
+            return true;
+        } catch (IOException e) {
+            throw new RuntimeException("删除会话目录失败: " + sessionId, e);
+        }
+    }
+
+    @Override
     public int messageCount(String sessionId) {
         return readAllMessages(sessionId).size();
     }
@@ -155,7 +180,15 @@ public class JsonlSessionStore implements SessionStore {
     // ---- internal ----
 
     private Path sessionDir(String sessionId) {
-        return sessionsDir.resolve(sessionId);
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId 不能为空");
+        }
+        Path base = sessionsDir.toAbsolutePath().normalize();
+        Path resolved = base.resolve(sessionId).normalize();
+        if (!resolved.startsWith(base)) {
+            throw new IllegalArgumentException("非法 sessionId: " + sessionId);
+        }
+        return resolved;
     }
 
     private Session loadSession(String sessionId) {

@@ -55,4 +55,8 @@ public class SessionManager {
     public MemoryServiceClient.SessionMessages getSessionMessages(String sessionId, int maxMessages) {
         return memoryClient.getSessionMessages(sessionId, maxMessages);
     }
+
+    public boolean deleteSession(String sessionId, String ownerUserId) {
+        return memoryClient.deleteSession(sessionId, ownerUserId);
+    }
 }

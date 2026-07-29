@@ -22,7 +22,7 @@ import java.util.Set;
 public class CorsWebFilter implements WebFilter {
 
     private static final String DEFAULT_ALLOWED_HEADERS = "Authorization, Content-Type, Accept";
-    private static final String DEFAULT_ALLOWED_METHODS = "GET, POST, OPTIONS";
+    private static final String DEFAULT_ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
     private final Set<String> allowedOrigins;
 

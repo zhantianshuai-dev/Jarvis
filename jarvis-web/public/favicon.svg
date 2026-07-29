@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="jarvis-gradient" x1="12" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#262A36"/>
+      <stop offset="1" stop-color="#101218"/>
+    </linearGradient>
+    <linearGradient id="jarvis-accent" x1="21" y1="15" x2="46" y2="47" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7EE8FF"/>
+      <stop offset="1" stop-color="#4D78FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="17" fill="url(#jarvis-gradient)"/>
+  <path d="M40.5 17.5V37.2C40.5 44.04 36.3 48 29.48 48C24.97 48 21.48 46.1 19.5 42.76" stroke="url(#jarvis-accent)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M19.5 25.2C21.58 20.94 25.64 17.5 30.86 17.5H40.5" stroke="#F7FAFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="45.5" cy="18.5" r="4.5" fill="#7EE8FF"/>
+</svg>
