@@ -8,14 +8,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * OpenAI 兼容的 Agent LLM Provider，支持 tool_calls 往返。
@@ -29,64 +28,169 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
     private static final ParameterizedTypeReference<ServerSentEvent<String>> SSE_TYPE =
             new ParameterizedTypeReference<>() {};
 
-    private final WebClient webClient;
     private final ObjectMapper objectMapper;
     private final JarvisConfig.LLMConfig config;
+    private final List<LlmEndpoint> endpoints;
+    private final int maxRetries;
+    private final Duration initialBackoff;
+    private final Duration maxBackoff;
+    private final boolean circuitBreakerEnabled;
+    private final int circuitFailureThreshold;
+    private final Duration circuitRecoveryTimeout;
 
     public OpenAiAgentLLMProvider(JarvisConfig.LLMConfig config, ObjectMapper objectMapper,
                                    WebClient.Builder builder) {
         this.config = config;
         this.objectMapper = objectMapper;
-        this.webClient = builder
-                .baseUrl(stripTrailingSlash(config.apiBase()))
-                .defaultHeader("Authorization", "Bearer " + config.apiKey())
-                .defaultHeader("Content-Type", "application/json")
-                .build();
+        this.endpoints = buildEndpoints(config, builder);
+        var retry = config.retry();
+        this.maxRetries = retry != null ? Math.max(0, retry.maxRetries()) : 3;
+        this.initialBackoff = Duration.ofMillis(retry != null && retry.initialBackoffMs() > 0
+                ? retry.initialBackoffMs() : 1000);
+        this.maxBackoff = Duration.ofMillis(retry != null && retry.maxBackoffMs() > 0
+                ? retry.maxBackoffMs() : 8000);
+        var circuitBreaker = config.circuitBreaker();
+        this.circuitBreakerEnabled = circuitBreaker == null || circuitBreaker.enabled();
+        this.circuitFailureThreshold = circuitBreaker != null && circuitBreaker.failureThreshold() > 0
+                ? circuitBreaker.failureThreshold() : 3;
+        this.circuitRecoveryTimeout = Duration.ofMillis(circuitBreaker != null && circuitBreaker.recoveryTimeoutMs() > 0
+                ? circuitBreaker.recoveryTimeoutMs() : 60_000);
+        log.info("Agent LLM endpoints: {}", endpoints.stream().map(LlmEndpoint::provider).toList());
     }
 
     @Override
     public ChatResponse chat(List<Message> messages, List<ToolDefinition> tools) {
-        var body = buildRequestBody(messages, tools, false);
+        var errors = new ArrayList<String>();
 
-        log.debug("LLM 请求: {} 条消息, {} 个工具, 模型={}", messages.size(),
-                tools != null ? tools.size() : 0, config.model());
-        logRequestBody(body, false);
+        for (var endpoint : endpoints) {
+            if (isCircuitOpen(endpoint)) {
+                String error = endpoint.provider() + "(circuit_open)";
+                errors.add(error);
+                log.warn("LLM provider 熔断中，跳过: provider={}, remainingMs={}",
+                        endpoint.provider(), endpoint.circuit().remainingOpenMs());
+                continue;
+            }
 
-        String raw;
-        try {
-            raw = webClient.post()
-                    .uri("/v1/chat/completions")
-                    .bodyValue(body)
-                    .retrieve()
-                    .onStatus(status -> status.isError(), response -> {
-                        String errorBody = response.bodyToMono(String.class).block(Duration.ofSeconds(30));
-                        log.error("LLM API 错误: status={}, body={}", response.statusCode(), errorBody);
-                        return response.createException();
-                    })
-                    .bodyToMono(String.class)
-                    .block(Duration.ofMinutes(5));
-        } catch (Exception e) {
-            log.error("LLM API 调用失败: {}", e.getMessage());
-            log.debug("LLM API 调用失败，请求体: {}", body.toPrettyString());
-            throw e;
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                var body = buildRequestBody(endpoint, messages, tools, false);
+                log.debug("LLM 请求: provider={}, attempt={}/{}, {} 条消息, {} 个工具, 模型={}",
+                        endpoint.provider(), attempt + 1, maxRetries + 1, messages.size(),
+                        tools != null ? tools.size() : 0, endpoint.model());
+                logRequestBody(endpoint, body, false);
+
+                try {
+                    String raw = endpoint.webClient().post()
+                            .uri("/v1/chat/completions")
+                            .bodyValue(body)
+                            .retrieve()
+                            .onStatus(status -> status.isError(), response ->
+                                    response.bodyToMono(String.class)
+                                            .defaultIfEmpty("")
+                                            .map(errorBody -> {
+                                                log.error("LLM API 错误: provider={}, status={}, body={}",
+                                                        endpoint.provider(), response.statusCode(), errorBody);
+                                                return new LlmProviderException(endpoint.provider(),
+                                                        response.statusCode().value(), errorBody);
+                                            }))
+                            .bodyToMono(String.class)
+                            .block(Duration.ofMinutes(5));
+
+                    endpoint.circuit().recordSuccess();
+                    return parseResponse(endpoint, raw);
+                } catch (Exception e) {
+                    String error = summarizeError(endpoint, e);
+                    errors.add(error);
+                    log.warn("LLM provider 调用失败: {}, attempt={}/{}", error, attempt + 1, maxRetries + 1);
+                    if (attempt < maxRetries && isRetryable(e)) {
+                        sleepBeforeRetry(attempt);
+                        continue;
+                    }
+                    if (isRetryable(e)) {
+                        endpoint.circuit().recordFailure(circuitFailureThreshold, circuitRecoveryTimeout);
+                    }
+                    logFallback(endpoint, nextEndpoint(endpoint));
+                    break;
+                }
+            }
         }
 
-        try {
-            return parseResponse(raw);
-        } catch (Exception e) {
-            log.error("解析 LLM 响应失败: {}", raw, e);
-            throw new RuntimeException("解析 LLM 响应失败: " + e.getMessage(), e);
-        }
+        String message = buildAllProvidersFailedMessage(errors);
+        log.error(message);
+        throw new RuntimeException(message);
     }
 
     @Override
     public Flux<ChatStreamDelta> streamChat(List<Message> messages, List<ToolDefinition> tools) {
-        var body = buildRequestBody(messages, tools, true);
-        log.debug("LLM stream 请求: {} 条消息, {} 个工具, 模型={}", messages.size(),
-                tools != null ? tools.size() : 0, config.model());
-        logRequestBody(body, true);
+        return streamWithFallback(0, messages, tools, new ArrayList<>());
+    }
 
-        return webClient.post()
+    private Flux<ChatStreamDelta> streamWithFallback(int endpointIndex, List<Message> messages,
+                                                     List<ToolDefinition> tools, List<String> errors) {
+        if (endpointIndex >= endpoints.size()) {
+            String message = buildAllProvidersFailedMessage(errors);
+            log.error(message);
+            return Flux.error(new RuntimeException(message));
+        }
+
+        var endpoint = endpoints.get(endpointIndex);
+        if (isCircuitOpen(endpoint)) {
+            String error = endpoint.provider() + "(circuit_open)";
+            errors.add(error);
+            var next = endpointName(endpointIndex + 1);
+            log.warn("LLM stream provider 熔断中，跳过: provider={}, next={}, remainingMs={}",
+                    endpoint.provider(), next, endpoint.circuit().remainingOpenMs());
+            return Flux.concat(
+                    Flux.just(ChatStreamDelta.providerEvent(
+                            LlmProviderEvent.circuitOpen(endpoint.provider(), next, endpoint.circuit().remainingOpenMs()))),
+                    streamWithFallback(endpointIndex + 1, messages, tools, errors)
+            );
+        }
+
+        return streamEndpointAttempt(endpoint, messages, tools, 0)
+                .doOnComplete(() -> endpoint.circuit().recordSuccess())
+                .onErrorResume(e -> {
+                    String error = summarizeError(endpoint, e);
+                    errors.add(error);
+                    if (isRetryable(e)) {
+                        endpoint.circuit().recordFailure(circuitFailureThreshold, circuitRecoveryTimeout);
+                    }
+                    var next = endpointName(endpointIndex + 1);
+                    log.warn("LLM stream provider 失败，准备降级: {}, next={}", error, next);
+                    return Flux.concat(
+                            Flux.just(ChatStreamDelta.providerEvent(
+                                    LlmProviderEvent.fallback(endpoint.provider(), next, error))),
+                            streamWithFallback(endpointIndex + 1, messages, tools, errors)
+                    );
+                });
+    }
+
+    private Flux<ChatStreamDelta> streamEndpointAttempt(LlmEndpoint endpoint, List<Message> messages,
+                                                        List<ToolDefinition> tools, int attempt) {
+        return Flux.defer(() -> streamOnce(endpoint, messages, tools))
+                .onErrorResume(e -> {
+                    if (attempt < maxRetries && isRetryable(e)) {
+                        long waitMs = retryDelayMs(attempt);
+                        String reason = summarizeError(endpoint, e);
+                        log.warn("LLM stream 重试: provider={}, attempt={}/{}, waitMs={}, error={}",
+                                endpoint.provider(), attempt + 1, maxRetries, waitMs, e.getMessage());
+                        return Flux.concat(
+                                Flux.just(ChatStreamDelta.providerEvent(
+                                        LlmProviderEvent.retry(endpoint.provider(), attempt + 1, maxRetries, waitMs, reason))),
+                                Mono.delay(Duration.ofMillis(waitMs))
+                                        .thenMany(streamEndpointAttempt(endpoint, messages, tools, attempt + 1))
+                        );
+                    }
+                    return Flux.error(e);
+                });
+    }
+
+    private Flux<ChatStreamDelta> streamOnce(LlmEndpoint endpoint, List<Message> messages, List<ToolDefinition> tools) {
+        var body = buildRequestBody(endpoint, messages, tools, true);
+        log.debug("LLM stream 请求: provider={}, {} 条消息, {} 个工具, 模型={}", endpoint.provider(), messages.size(),
+                tools != null ? tools.size() : 0, endpoint.model());
+        logRequestBody(endpoint, body, true);
+
+        return endpoint.webClient().post()
                 .uri("/v1/chat/completions")
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .bodyValue(body)
@@ -95,9 +199,10 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                         response.bodyToMono(String.class)
                                 .defaultIfEmpty("")
                                 .map(errorBody -> {
-                                    log.error("LLM stream API 错误: status={}, body={}",
-                                            response.statusCode(), errorBody);
-                                    return new RuntimeException("LLM stream API 错误: " + response.statusCode());
+                                    log.error("LLM stream API 错误: provider={}, status={}, body={}",
+                                            endpoint.provider(), response.statusCode(), errorBody);
+                                    return new LlmProviderException(endpoint.provider(),
+                                            response.statusCode().value(), errorBody);
                                 }))
                 .bodyToFlux(SSE_TYPE)
                 .map(ServerSentEvent::data)
@@ -105,9 +210,10 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                 .map(this::parseStreamData);
     }
 
-    private ObjectNode buildRequestBody(List<Message> messages, List<ToolDefinition> tools, boolean stream) {
+    private ObjectNode buildRequestBody(LlmEndpoint endpoint, List<Message> messages, List<ToolDefinition> tools,
+                                        boolean stream) {
         var body = objectMapper.createObjectNode();
-        body.put("model", config.model());
+        body.put("model", endpoint.model());
         body.put("temperature", config.temperature());
         body.put("max_tokens", config.maxTokens());
         //流式输出
@@ -155,12 +261,12 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         return body;
     }
 
-    private void logRequestBody(ObjectNode body, boolean stream) {
+    private void logRequestBody(LlmEndpoint endpoint, ObjectNode body, boolean stream) {
         if (!config.logRequestBody()) {
             return;
         }
         String mode = stream ? "stream" : "chat";
-        log.info("LLM {} 请求体 JSON:\n{}", mode, body.toPrettyString());
+        log.info("LLM {} 请求体 JSON: provider={}\n{}", mode, endpoint.provider(), body.toPrettyString());
     }
 
     private ChatStreamDelta parseStreamData(String data) {
@@ -174,7 +280,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                     ? root.path("choices").get(0)
                     : null;
             if (choice == null) {
-                return new ChatStreamDelta(null, null, List.of(), null, usage, false);
+                return new ChatStreamDelta(null, null, List.of(), null, usage, false, null);
             }
 
             String finishReason = choice.path("finish_reason").isMissingNode()
@@ -205,13 +311,13 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                     toolDeltas.add(new ChatStreamDelta.ToolCallDelta(index, id, name, arguments));
                 }
             }
-            return new ChatStreamDelta(content, reasoning, toolDeltas, finishReason, usage, false);
+            return new ChatStreamDelta(content, reasoning, toolDeltas, finishReason, usage, false, null);
         } catch (Exception e) {
             throw new RuntimeException("解析 LLM stream 响应失败: " + e.getMessage(), e);
         }
     }
 
-    private ChatResponse parseResponse(String raw) throws Exception {
+    private ChatResponse parseResponse(LlmEndpoint endpoint, String raw) throws Exception {
         var root = objectMapper.readTree(raw);
         var choice = root.path("choices").get(0);
 
@@ -242,8 +348,8 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         // usage
         var usage = parseUsage(root.path("usage"));
 
-        log.debug("LLM 响应: finish={}, content长度={}, toolCalls={}, reasoning={}, tokens={}",
-                finishReason, content != null ? content.length() : 0,
+        log.debug("LLM 响应: provider={}, finish={}, content长度={}, toolCalls={}, reasoning={}, tokens={}",
+                endpoint.provider(), finishReason, content != null ? content.length() : 0,
                 toolCalls != null ? toolCalls.size() : 0,
                 reasoningContent != null ? reasoningContent.length() : 0,
                 usage.totalTokens());
@@ -262,7 +368,162 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         );
     }
 
+    private List<LlmEndpoint> buildEndpoints(JarvisConfig.LLMConfig config, WebClient.Builder builder) {
+        var result = new ArrayList<LlmEndpoint>();
+        result.add(newEndpoint(
+                hasText(config.provider()) ? config.provider() : "primary",
+                config.apiBase(),
+                config.apiKey(),
+                config.model(),
+                builder));
+
+        var fallbacks = config.fallbackProviders();
+        if (fallbacks != null) {
+            for (var fallback : fallbacks) {
+                if (fallback == null || !fallback.enabled()) {
+                    continue;
+                }
+                if (!hasText(fallback.apiBase()) || !hasText(fallback.model()) || !hasText(fallback.apiKey())) {
+                    log.warn("跳过 LLM fallback provider: provider={}, reason=missing api-base/model/api-key",
+                            fallback.provider());
+                    continue;
+                }
+                result.add(newEndpoint(fallback.provider(), fallback.apiBase(), fallback.apiKey(), fallback.model(), builder));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private LlmEndpoint newEndpoint(String provider, String apiBase, String apiKey, String model,
+                                    WebClient.Builder builder) {
+        var clientBuilder = builder.clone()
+                .baseUrl(stripTrailingSlash(apiBase))
+                .defaultHeader("Content-Type", "application/json");
+        if (hasText(apiKey)) {
+            clientBuilder.defaultHeader("Authorization", "Bearer " + apiKey);
+        }
+        return new LlmEndpoint(provider, model, clientBuilder.build(), new CircuitState());
+    }
+
+    private boolean isRetryable(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof LlmProviderException lpe) {
+                int status = lpe.statusCode();
+                return status == 0 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+            }
+            current = current.getCause();
+        }
+        return true;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        long delay = retryDelayMs(attempt);
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private long retryDelayMs(int attempt) {
+        return Math.min(
+                maxBackoff.toMillis(),
+                initialBackoff.toMillis() * (1L << Math.min(attempt, 10))
+        );
+    }
+
+    private String summarizeError(LlmEndpoint endpoint, Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof LlmProviderException lpe) {
+                return endpoint.provider() + "(status=" + lpe.statusCode() + ", body=" + trim(lpe.responseBody(), 300) + ")";
+            }
+            current = current.getCause();
+        }
+        return endpoint.provider() + "(" + trim(e.getMessage(), 300) + ")";
+    }
+
+    private String buildAllProvidersFailedMessage(List<String> errors) {
+        return "所有 LLM 提供商调用失败，请稍后重试。失败详情: " + String.join(" | ", errors);
+    }
+
+    private boolean isCircuitOpen(LlmEndpoint endpoint) {
+        return circuitBreakerEnabled && endpoint.circuit().isOpen();
+    }
+
+    private void logFallback(LlmEndpoint current, LlmEndpoint next) {
+        if (next == null) {
+            log.warn("LLM provider 已耗尽重试且没有可用降级 provider: from={}", current.provider());
+            return;
+        }
+        log.warn("LLM provider 已耗尽重试，切换到下一个 provider: from={}, next={}",
+                current.provider(), next.provider());
+    }
+
+    private LlmEndpoint nextEndpoint(LlmEndpoint endpoint) {
+        int index = endpoints.indexOf(endpoint);
+        if (index < 0 || index + 1 >= endpoints.size()) {
+            return null;
+        }
+        return endpoints.get(index + 1);
+    }
+
+    private String endpointName(int index) {
+        if (index < 0 || index >= endpoints.size()) {
+            return "";
+        }
+        return endpoints.get(index).provider();
+    }
+
     private static String stripTrailingSlash(String s) {
         return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String trim(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    private record LlmEndpoint(
+            String provider,
+            String model,
+            WebClient webClient,
+            CircuitState circuit
+    ) {}
+
+    private static final class CircuitState {
+        private int failureCount;
+        private long openUntilMs;
+
+        synchronized boolean isOpen() {
+            long now = System.currentTimeMillis();
+            if (openUntilMs <= now) {
+                return false;
+            }
+            return true;
+        }
+
+        synchronized long remainingOpenMs() {
+            return Math.max(0, openUntilMs - System.currentTimeMillis());
+        }
+
+        synchronized void recordSuccess() {
+            failureCount = 0;
+            openUntilMs = 0;
+        }
+
+        synchronized void recordFailure(int threshold, Duration recoveryTimeout) {
+            failureCount++;
+            if (failureCount >= threshold) {
+                openUntilMs = System.currentTimeMillis() + recoveryTimeout.toMillis();
+            }
+        }
     }
 }

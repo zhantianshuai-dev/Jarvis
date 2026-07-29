@@ -143,7 +143,19 @@ function parseSseBlock(block) {
 
 export async function streamChat(
   token,
-  { sessionId, message, mode, workspace, onToken, onReasoning, onToolCall, onToolResult, onDone, signal },
+  {
+    sessionId,
+    message,
+    mode,
+    workspace,
+    onToken,
+    onReasoning,
+    onToolCall,
+    onToolResult,
+    onProviderEvent,
+    onDone,
+    signal,
+  },
 ) {
   let response;
   try {
@@ -206,6 +218,10 @@ export async function streamChat(
     }
     if (event === 'tool_result') {
       onToolResult?.(data);
+      return;
+    }
+    if (event === 'llm_retry' || event === 'llm_fallback' || event === 'llm_circuit_open') {
+      onProviderEvent?.(event, data);
       return;
     }
     if (event === 'done') {

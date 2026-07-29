@@ -904,6 +904,24 @@ button {
   color: #9b1c1c;
 }
 
+.provider-events {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 8px;
+  color: #7a7a7a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.provider-event {
+  width: fit-content;
+}
+
+.provider-event.llm_fallback,
+.provider-event.llm_circuit_open {
+  color: #5f5f5f;
+}
+
 @keyframes subagent-pulse {
   0%,
   100% {

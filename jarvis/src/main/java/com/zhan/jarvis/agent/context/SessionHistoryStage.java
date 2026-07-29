@@ -23,7 +23,11 @@ public class SessionHistoryStage implements ContextStage {
 
             String wm = ctx.workingMemory();
             if (wm != null && !wm.isBlank()) {
-                state.messages().add(Message.system("<working_memory>\n" + wm + "\n</working_memory>"));
+                state.messages().add(Message.system("""
+                        <context kind="working_memory">
+                        %s
+                        </context>
+                        """.formatted(wm).strip()));
             }
 
             for (var stub : ctx.messages()) {

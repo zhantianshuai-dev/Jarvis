@@ -2,6 +2,8 @@ package com.zhan.jarvis.agent.loop;
 
 import com.zhan.jarvis.llm.ToolCall;
 
+import java.util.Map;
+
 /**
  * AgentLoop 事件观察器。
  * 普通 HTTP 使用 NOOP；SSE 使用 SseLoopObserver 输出事件。
@@ -15,6 +17,10 @@ public interface LoopObserver {
     }
 
     default void onReasoning(LoopState state, int iteration, String reasoning) {
+    }
+
+    default void onProviderEvent(LoopState state, int iteration, String type, String content,
+                                 Map<String, Object> metadata) {
     }
 
     default void onToolCall(LoopState state, int iteration, ToolCall toolCall) {

@@ -20,11 +20,11 @@ public class MemoryRetrievalStage implements ContextStage {
         try {
             String memoryResult = memoryClient.search(request.currentMessage(), 5);
             if (memoryResult != null && !memoryResult.isBlank() && !memoryResult.equals("{}")) {
-                state.messages().add(Message.user(
-                        "<memory_context>\n" + memoryResult + "\n</memory_context>\n\n"
-                                + "以上是从记忆系统中检索到的相关上下文。请参考这些信息回复用户的以下消息：\n\n"
-                                + request.currentMessage()));
-                state.markCurrentMessageAdded();
+                state.messages().add(Message.system("""
+                        <context kind="retrieved_memory">
+                        %s
+                        </context>
+                        """.formatted(memoryResult).strip()));
             }
         } catch (Exception e) {
             log.debug("记忆检索失败（非致命）: {}", e.getMessage());

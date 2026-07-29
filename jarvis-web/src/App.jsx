@@ -205,6 +205,19 @@ function ContextUsageLine({ usage }) {
   );
 }
 
+function ProviderEventList({ events }) {
+  if (!events?.length) return null;
+  return (
+    <div className="provider-events">
+      {events.slice(-4).map((event) => (
+        <div className={`provider-event ${event.type}`} key={event.id}>
+          {event.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function selectedRunModeLabel(value) {
   return RUN_MODES.find((item) => item.value === value)?.label || 'Agent';
 }
@@ -329,6 +342,30 @@ function subagentStatusFromToolResult(data = {}) {
     task: content.match(/任务:\s*([^\n]+)/)?.[1]?.trim() || '',
     worktree: content.match(/worktree:\s*([^\n]+)/)?.[1]?.trim() || '',
     worktree_path: content.match(/worktree_path:\s*([^\n]+)/)?.[1]?.trim() || '',
+  };
+}
+
+function normalizeProviderEvent(type, data = {}) {
+  const provider = data.provider || '';
+  const nextProvider = data.next_provider || data.nextProvider || '';
+  const attempt = Number(data.attempt || 0);
+  const maxAttempts = Number(data.max_attempts || data.maxAttempts || 0);
+  let text = data.message || '';
+  if (!text) {
+    if (type === 'llm_retry') {
+      text = `${provider} 调用失败，正在重试 ${attempt}/${maxAttempts}`;
+    } else if (type === 'llm_fallback') {
+      text = nextProvider ? `${provider} 调用失败，切换到 ${nextProvider}` : `${provider} 调用失败`;
+    } else if (type === 'llm_circuit_open') {
+      text = `${provider} 熔断中，跳过该模型服务`;
+    }
+  }
+  return {
+    id: createClientId('provider_event'),
+    type,
+    provider,
+    nextProvider,
+    text,
   };
 }
 
@@ -676,6 +713,19 @@ export default function App() {
           if (status) {
             upsertSubagentStatus(status);
           }
+        },
+        onProviderEvent: (type, data) => {
+          const providerEvent = normalizeProviderEvent(type, data);
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    providerEvents: [...(message.providerEvents || []), providerEvent],
+                  }
+                : message,
+            ),
+          );
         },
       });
     } catch (err) {
@@ -1190,9 +1240,10 @@ export default function App() {
                             <div className="subagent-error">{message.subagent.error}</div>
                           )}
                         </div>
-                      ) : message.content ? (
+                      ) : message.content || message.providerEvents?.length ? (
                         <>
-                          <MarkdownMessage content={message.content} />
+                          {message.content ? <MarkdownMessage content={message.content} /> : null}
+                          <ProviderEventList events={message.providerEvents} />
                           {message.confirmation && (
                             <div className="tool-confirm-panel">
                               <div className="tool-confirm-head">

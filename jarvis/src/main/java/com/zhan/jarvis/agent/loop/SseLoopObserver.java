@@ -30,6 +30,17 @@ public class SseLoopObserver implements LoopObserver {
     }
 
     @Override
+    public void onProviderEvent(LoopState state, int iteration, String type, String content,
+                                Map<String, Object> metadata) {
+        var extra = new LinkedHashMap<String, Object>();
+        extra.put("iteration", iteration);
+        if (metadata != null) {
+            extra.putAll(metadata);
+        }
+        emit(type, state.sessionId(), content, "llm", extra);
+    }
+
+    @Override
     public void onToolCall(LoopState state, int iteration, ToolCall toolCall) {
         emit(SseEventTypes.TOOL_CALL, state.sessionId(), toolCall.name(), "chat", Map.of(
                 "iteration", iteration,

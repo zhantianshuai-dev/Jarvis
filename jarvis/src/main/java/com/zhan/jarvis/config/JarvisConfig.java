@@ -28,8 +28,31 @@ public record JarvisConfig(
         String model,
         double temperature,
         int maxTokens,
-        boolean logRequestBody
-    ) {}
+        boolean logRequestBody,
+        RetryConfig retry,
+        CircuitBreakerConfig circuitBreaker,
+        FallbackProviderConfig[] fallbackProviders
+    ) {
+        public record RetryConfig(
+            int maxRetries,
+            long initialBackoffMs,
+            long maxBackoffMs
+        ) {}
+
+        public record CircuitBreakerConfig(
+            boolean enabled,
+            int failureThreshold,
+            long recoveryTimeoutMs
+        ) {}
+
+        public record FallbackProviderConfig(
+            boolean enabled,
+            String provider,
+            String apiKey,
+            String apiBase,
+            String model
+        ) {}
+    }
 
     /** memory-service 连接配置 */
     public record MemoryServiceConfig(

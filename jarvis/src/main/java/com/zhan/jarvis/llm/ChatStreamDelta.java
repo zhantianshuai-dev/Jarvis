@@ -11,10 +11,15 @@ public record ChatStreamDelta(
         List<ToolCallDelta> toolCallDeltas,
         String finishReason,
         ChatResponse.TokenUsage usage,
-        boolean done
+        boolean done,
+        LlmProviderEvent providerEvent
 ) {
     public static ChatStreamDelta doneEvent() {
-        return new ChatStreamDelta(null, null, List.of(), null, null, true);
+        return new ChatStreamDelta(null, null, List.of(), null, null, true, null);
+    }
+
+    public static ChatStreamDelta providerEvent(LlmProviderEvent event) {
+        return new ChatStreamDelta(null, null, List.of(), null, null, false, event);
     }
 
     public record ToolCallDelta(

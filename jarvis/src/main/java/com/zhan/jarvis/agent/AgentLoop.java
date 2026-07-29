@@ -221,6 +221,7 @@ public class AgentLoop {
                                       String userId, Map<String, Object> metadata,
                                       FluxSink<Map<String, Object>> sink) {
         try {
+            //构建SSEObserver
             var observer = new SseLoopObserver(sink);
             var session = sessionManager.getOrCreate(sessionId, userId);
             var runMode = RunMode.from(metadata == null ? null : metadata.get("mode"));
@@ -361,6 +362,11 @@ public class AgentLoop {
         var typedTools = (List<com.zhan.jarvis.llm.ToolDefinition>) tools;
         llmProvider.streamChat(state.messages(), typedTools)
                 .doOnNext(delta -> {
+                    if (delta.providerEvent() != null) {
+                        var event = delta.providerEvent();
+                        observer.onProviderEvent(state, iteration, event.type(), event.message(), event.toMap());
+                        return;
+                    }
                     if (delta.done()) {
                         return;
                     }

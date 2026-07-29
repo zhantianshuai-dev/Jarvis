@@ -10,6 +10,25 @@ jarvis:
     api-base: ${LLM_API_BASE:https://easyrouter.io}
     model: ${LLM_MODEL:deepseek-v4-pro}
     log-request-body: ${JARVIS_LLM_LOG_REQUEST_BODY:false}
+    retry:
+      max-retries: ${JARVIS_LLM_MAX_RETRIES:3}
+      initial-backoff-ms: ${JARVIS_LLM_INITIAL_BACKOFF_MS:1000}
+      max-backoff-ms: ${JARVIS_LLM_MAX_BACKOFF_MS:8000}
+    circuit-breaker:
+      enabled: ${JARVIS_LLM_CIRCUIT_BREAKER_ENABLED:true}
+      failure-threshold: ${JARVIS_LLM_CIRCUIT_FAILURE_THRESHOLD:3}
+      recovery-timeout-ms: ${JARVIS_LLM_CIRCUIT_RECOVERY_TIMEOUT_MS:60000}
+    fallback-providers:
+      - enabled: ${SILICONFLOW_ENABLED:false}
+        provider: siliconflow
+        api-key: ${SILICONFLOW_API_KEY:}
+        api-base: ${SILICONFLOW_API_BASE:https://api.siliconflow.cn}
+        model: ${SILICONFLOW_MODEL:Qwen/Qwen3-235B-A22B}
+      - enabled: ${BAILIAN_ENABLED:false}
+        provider: bailian
+        api-key: ${BAILIAN_API_KEY:}
+        api-base: ${BAILIAN_API_BASE:https://dashscope.aliyuncs.com/compatible-mode}
+        model: ${BAILIAN_MODEL:qwen-plus}
 
   agent:
     workspace: ${JARVIS_WORKSPACE:./workspace}
