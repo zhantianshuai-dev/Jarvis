@@ -3,7 +3,7 @@ package com.zhan.memoryservice.llm;
 import java.util.List;
 
 /**
- * 重排序接口，对标 Python 重排序客户端。
+ * 重排序接口，重排序客户端。
  * 对候选文本列表进行语义重排序，返回与查询的相关性分数。
  */
 public interface RerankProvider {

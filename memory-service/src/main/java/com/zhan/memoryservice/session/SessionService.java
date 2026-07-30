@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 会话服务 — 对标 Python Session + commit_async。
+ * 会话服务，负责消息写入、自动归档、工作记忆生成和长期记忆提取。
  *
  * <pre>
  * 正常流程:
@@ -321,14 +321,14 @@ public class SessionService {
     // ---- 上下文组装 ----
 
     /**
-     * 获取会话上下文（对标 Jarvis get_session_context）。
+     * 获取会话上下文。
      * 返回工作记忆 + 最近 N 条消息。
      * memory-service 是会话的唯一拥有者，Jarvis 不自己管理上下文。
      */
     public Map<String, Object> getSessionContext(String sessionId, int maxMessages) {
         var session = store.get(sessionId);
 
-        // 取最新的归档概览（对标 Jarvis 的 latest_archive_overview）。
+        // 取最新的归档概览。
         String workingMemory = "";
         for (int i = session.compressionCount(); i >= 1; i--) {
             var entry = contentService.getById(sessionId + "_wm_" + String.format("%03d", i));

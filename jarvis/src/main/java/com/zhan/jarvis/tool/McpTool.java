@@ -5,7 +5,7 @@ import tools.jackson.databind.JsonNode;
 import java.util.Map;
 
 /**
- * MCP 工具接口 — 对标 MCP 协议的工具定义。
+ * MCP 工具接口 — MCP 协议的工具定义。
  * <p>
  * 每个工具提供 name/description/inputSchema（用于 LLM 函数调用）
  * 和 execute（用于实际执行）。

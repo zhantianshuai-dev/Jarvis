@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 
 /**
- * 层级检索器，对标 Python HierarchicalRetriever。
+ * 层级检索器，HierarchicalRetriever。
  *
  * <pre>
  * 检索链路:

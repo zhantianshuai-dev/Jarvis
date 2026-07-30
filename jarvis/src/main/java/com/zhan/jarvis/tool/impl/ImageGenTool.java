@@ -17,7 +17,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * imagegen 工具 — 对标 Codex $imagegen，调用 gpt-image-2 模型生成图片。
+ * imagegen 工具 — Codex $imagegen，调用 gpt-image-2 模型生成图片。
  * <p>
  * 支持基于参考图片的图像生成：传入宠物照片等参考图片路径，
  * gpt-image-2 根据参考图片和提示词描述生成目标图片。

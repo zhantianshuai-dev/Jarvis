@@ -22,8 +22,6 @@ import java.util.List;
 
 /**
  * 上下文构建器 — 组装 LLM 调用所需的完整消息列表。
- *
- * 对标 Python VikingBot ContextBuilder.build_messages()。
  * 消息历史和工作记忆均从 memory-service 获取，Jarvis 不自己管理上下文。
  */
 public class ContextBuilder {

@@ -20,7 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 
 /**
- * 检索编排 — 对标 Python 检索服务。
+ * 检索编排 — 检索服务。
  *
  * <pre>
  * find(): 纯向量检索，无意图分析 → 层级检索

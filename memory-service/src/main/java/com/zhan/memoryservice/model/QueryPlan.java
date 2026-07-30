@@ -3,7 +3,7 @@ package com.zhan.memoryservice.model;
 import java.util.List;
 
 /**
- * 查询计划，对标 Python 查询计划。
+ * 查询计划，查询计划。
  * 意图分析器的输出，包含多个类型化查询和 LLM 的推理过程。
  */
 public record QueryPlan(

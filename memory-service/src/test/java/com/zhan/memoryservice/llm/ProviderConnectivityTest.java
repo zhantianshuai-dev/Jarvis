@@ -2,6 +2,7 @@ package com.zhan.memoryservice.llm;
 
 import com.zhan.memoryservice.config.MemoryServiceConfig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -12,9 +13,10 @@ import java.util.Map;
 /**
  * 验证 LLM 和 Embedding provider 连通性，打印原始 JSON 响应。
  * <p>
- * 运行方式: ./mvnw test -Dtest=ProviderConnectivityTest
+ * 运行方式: RUN_PROVIDER_CONNECTIVITY_TEST=true ./mvnw test -Dtest=ProviderConnectivityTest
  */
 @SpringBootTest
+@EnabledIfEnvironmentVariable(named = "RUN_PROVIDER_CONNECTIVITY_TEST", matches = "true")
 class ProviderConnectivityTest {
 
     @Autowired

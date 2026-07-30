@@ -16,7 +16,7 @@ import java.util.*;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 记忆去重器，对标 Python MemoryDeduplicator。
+ * 记忆去重器，MemoryDeduplicator。
  *
  * 两阶段去重:
      *   1. 向量预筛：用候选记忆摘要向量检索同类已有记忆

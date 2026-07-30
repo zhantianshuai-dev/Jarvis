@@ -10,7 +10,7 @@ import java.util.Map;
 
 /**
  * 派生子 Agent 后台执行任务。
- * 对标 Python VikingBot 派生工具。
+ * 派生工具。
  */
 public class SpawnTool implements McpTool {
 

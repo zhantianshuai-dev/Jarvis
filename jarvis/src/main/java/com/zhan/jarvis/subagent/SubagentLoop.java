@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 子 Agent 独立循环 — 对标 Python VikingBot 子 Agent 循环。
+ * 子 Agent 独立循环 — 子 Agent 循环。
  * <p>
  * 子 Agent 拥有:
  * - 受限工具集（无 spawn 递归）

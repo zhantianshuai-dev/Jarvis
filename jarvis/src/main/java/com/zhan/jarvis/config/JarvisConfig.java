@@ -3,7 +3,7 @@ package com.zhan.jarvis.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Jarvis 配置，对标 Python VikingBot Config。
+ * Jarvis 运行时配置。
  *
  * Spring Boot 4.0 + JDK 21 Record 自动映射 yaml 到嵌套 Record。
  */

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
- * 8 类记忆，对标 Python MemoryCategory。
+ * 8 类记忆，MemoryCategory。
  */
 public enum MemoryCategory {
     PROFILE("profile"),           // 用户画像（始终合并）

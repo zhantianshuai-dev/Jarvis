@@ -13,7 +13,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * JSONL 文件会话存储 — 对标 Jarvis messages.jsonl + .meta.json。
+ * JSONL 文件会话存储 — messages.jsonl + .meta.json。
  *
  * <pre>
  * {workspace}/sessions/{sessionId}/

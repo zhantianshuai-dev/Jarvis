@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 
 /**
- * 意图分析器，对标 Python 意图分析器。
+ * 意图分析器，意图分析器。
  * 调用 LLM 分析会话上下文，生成查询计划（多个类型化查询）。
  */
 public class IntentAnalyzer {

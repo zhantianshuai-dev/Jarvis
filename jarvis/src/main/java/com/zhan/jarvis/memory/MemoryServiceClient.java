@@ -193,7 +193,7 @@ public class MemoryServiceClient {
     }
 
     /**
-     * 获取会话上下文（对标 Jarvis get_session_context）。
+     * 获取会话上下文。
      * 返回 working_memory + 最近 N 条消息。
      */
     public SessionContext getSessionContext(String sessionId, int maxMessages) {
@@ -257,7 +257,7 @@ public class MemoryServiceClient {
     }
 
     /**
-     * 会话上下文 — 对标 Jarvis get_session_context 返回值。
+     * 会话上下文返回值。
      */
     public record SessionContext(
             String workingMemory,

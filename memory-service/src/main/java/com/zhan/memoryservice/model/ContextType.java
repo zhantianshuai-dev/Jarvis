@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
- * 上下文类型，对标 Python ContextType(str, Enum)。
+ * 上下文类型，ContextType(str, Enum)。
  */
 public enum ContextType {
     RESOURCE("resource"),

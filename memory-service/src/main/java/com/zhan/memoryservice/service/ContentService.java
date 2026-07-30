@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 内容写入编排 — 对标 Python ResourceProcessor + ContentWriteCoordinator。
+ * 内容写入编排。
  * <p>
  * 流程：校验 → 写入 H2 →（异步）LLM 生成摘要和概览 → 向量化 → 写入 Milvus → 更新 H2
  * 异步部分使用虚拟线程。

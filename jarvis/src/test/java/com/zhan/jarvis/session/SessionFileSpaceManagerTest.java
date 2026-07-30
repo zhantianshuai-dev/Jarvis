@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SessionFileSpaceManagerTest {
 
@@ -28,13 +29,17 @@ class SessionFileSpaceManagerTest {
     }
 
     @Test
-    void ensureSanitizesUnsafeSessionId() {
+    void rejectsUnsafeSessionId() {
         var manager = new SessionFileSpaceManager(tempDir.toString());
 
-        var space = manager.ensure("../unsafe/session");
-
-        assertThat(space.root()).startsWith(manager.sessionsRoot());
-        assertThat(space.root().getFileName().toString()).isEqualTo(".._unsafe_session");
+        assertThatThrownBy(() -> manager.ensure("../unsafe/session"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> manager.ensure("."))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> manager.ensure(".."))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> manager.ensure("___"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

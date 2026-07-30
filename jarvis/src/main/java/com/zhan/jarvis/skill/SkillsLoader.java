@@ -12,9 +12,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 技能加载器 — 对标 Python SkillsLoader。
+ * 技能加载器 — SkillsLoader。
  *
- * 扫描工作区 skills 目录，解析 SKILL.md 的 YAML 文件头和 vikingbot 元数据，
+ * 扫描工作区 skills 目录，解析 SKILL.md 的 YAML 文件头和 jarvis 元数据，
  * 实现渐进式加载：
  *   1. always=true 的技能 → 全量注入系统提示词
  *   2. 其他技能 → 只注入摘要 XML（agent 按需 read_file 加载）
@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
  * ---
  * name: skill-name
  * description: 技能说明
- * metadata: {"vikingbot":{"always":true,"requires":{"bins":["tmux"],"env":["API_KEY"]}}}
+ * metadata: {"jarvis":{"always":true,"requires":{"bins":["tmux"],"env":["API_KEY"]}}}
  * ---
  *
  * # 技能正文（Markdown）
@@ -160,7 +160,6 @@ public class SkillsLoader {
 
     /**
      * 解析 SKILL.md 的 YAML 文件头。
-     * 简单行解析（对标 Python 的 get_skill_metadata）。
      */
     SkillFrontMatter parseFrontMatter(String content) {
         if (content == null || !content.startsWith("---")) return SkillFrontMatter.EMPTY;
@@ -231,14 +230,14 @@ public class SkillsLoader {
     }
 
     /**
-     * 从 YAML 文件头的 metadata JSON 中解析 vikingbot 配置。
+     * 从 YAML 文件头的 metadata JSON 中解析 Jarvis 技能配置。
      */
     SkillMeta parseSkillMeta(String metadata) {
         if (metadata == null || metadata.isBlank()) return SkillMeta.EMPTY;
 
         try {
             var root = json.readTree(metadata);
-            var vb = root.get("vikingbot");
+            var vb = root.get("jarvis");
             if (vb == null) return SkillMeta.EMPTY;
 
             String emoji = vb.has("emoji") ? vb.get("emoji").asText() : "";

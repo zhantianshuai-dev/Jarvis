@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 本地 MCP 服务 — 管理内置工具的注册、发现和调用。
  * <p>
- * 对标 MCP 协议的 tools/list 和 tools/call 语义。
+ * MCP 协议的 tools/list 和 tools/call 语义。
  * 内置工具通过此服务注册，与外部 MCP 工具使用相同的工具定义格式。
  */
 public class LocalMcpServer {

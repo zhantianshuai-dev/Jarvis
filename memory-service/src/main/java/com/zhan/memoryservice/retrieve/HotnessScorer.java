@@ -4,7 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * 冷热度打分算法，对标 Python memory_lifecycle.py → hotness_score()。
+ * 冷热度打分算法。
  *
  * <pre>
  *   score = sigmoid(log1p(activeCount)) × timeDecay(updatedAt)

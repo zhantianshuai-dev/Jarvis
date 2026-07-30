@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 会话模型，对标 Python 会话核心字段。
+ * 会话模型，会话核心字段。
  * 会话代表一段对话的生命周期。
  */
 public record Session(

@@ -21,7 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 子 Agent 管理器 — 对标 Python VikingBot 子 Agent 管理器。
+ * 子 Agent 管理器 — 子 Agent 管理器。
  * <p>
  * 管理子 Agent 生命周期：创建、调度、结果收集。
  * 子 Agent 在虚拟线程中运行，完成后结果存入内存。

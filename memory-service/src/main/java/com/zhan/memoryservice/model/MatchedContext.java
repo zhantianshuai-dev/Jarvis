@@ -1,7 +1,7 @@
 package com.zhan.memoryservice.model;
 
 /**
- * 检索命中的上下文片段，对标 Python MatchedContext。
+ * 检索命中的上下文片段，MatchedContext。
  * 只包含调用方需要的信息，内部调试字段不暴露。
  */
 public record MatchedContext(

@@ -29,15 +29,15 @@ public class SessionManager {
 
     /** 获取或创建会话 */
     public Session getOrCreate(String sessionId) {
-        memoryClient.createSession(sessionId);
         ensureFileSpace(sessionId);
+        memoryClient.createSession(sessionId);
         return new Session(sessionId);
     }
 
     /** 获取或创建带用户归属的会话 */
     public Session getOrCreate(String sessionId, String ownerUserId) {
-        memoryClient.createSession(sessionId, ownerUserId);
         ensureFileSpace(sessionId);
+        memoryClient.createSession(sessionId, ownerUserId);
         return new Session(sessionId);
     }
 

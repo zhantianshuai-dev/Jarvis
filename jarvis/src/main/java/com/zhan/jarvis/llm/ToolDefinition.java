@@ -3,7 +3,7 @@ package com.zhan.jarvis.llm;
 import java.util.Map;
 
 /**
- * 工具定义 — 对标 OpenAI 函数工具格式和 MCP tools/list 响应。
+ * 工具定义 — OpenAI 函数工具格式和 MCP tools/list 响应。
  *
  * @param name        工具名称
  * @param description 工具描述

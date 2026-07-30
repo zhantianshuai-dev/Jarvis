@@ -10,7 +10,7 @@ import java.util.*;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 记忆提取器，对标 Python MemoryExtractor。
+ * 记忆提取器，MemoryExtractor。
  * 调用 LLM 从对话中提取 8 类结构化记忆。
  */
 public class MemoryExtractor {

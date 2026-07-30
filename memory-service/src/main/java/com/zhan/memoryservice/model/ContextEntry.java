@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 一个上下文条目，对标 Python Context。
+ * 一个上下文条目，Context。
  * 代表一个存储在系统中的知识单元，可以是文档、记忆或技能。
  *
  * level 约定：

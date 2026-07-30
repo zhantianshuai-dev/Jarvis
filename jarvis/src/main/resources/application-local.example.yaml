@@ -37,7 +37,7 @@ jarvis:
         label: Jarvis workspace
         path: ${JARVIS_WORKSPACE:./workspace}
       - id: project
-        label: openViking project
+        label: Project workspace
         path: ${JARVIS_PROJECT_WORKSPACE:.}
     context-budget:
       enabled: ${JARVIS_CONTEXT_BUDGET_ENABLED:true}

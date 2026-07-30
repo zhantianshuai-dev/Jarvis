@@ -14,7 +14,6 @@ import java.util.Map;
 
 /**
  * 管理 Cron 定时任务。
- * 对标 Jarvis cron tool。
  */
 public class CronTool implements McpTool {
 

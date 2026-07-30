@@ -2,7 +2,7 @@ package com.zhan.memoryservice.session;
 
 /**
  * 记忆提取的结果 — LLM 从对话中提取出一条候选记忆。
- * 对标 Python CandidateMemory。
+ * CandidateMemory。
  */
 public record CandidateMemory(
     MemoryCategory category,      // 8 类之一

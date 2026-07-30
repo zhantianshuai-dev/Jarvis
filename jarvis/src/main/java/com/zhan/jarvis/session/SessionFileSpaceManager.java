@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 会话文件空间管理器。
@@ -17,6 +18,7 @@ import java.util.Map;
 public class SessionFileSpaceManager {
 
     private static final Logger log = LoggerFactory.getLogger(SessionFileSpaceManager.class);
+    private static final Pattern SAFE_SESSION_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{2,127}");
 
     private final Path sessionsRoot;
 
@@ -77,20 +79,24 @@ public class SessionFileSpaceManager {
     }
 
     private Path resolveSessionRoot(String sessionId) {
-        String safeId = sanitizeSessionId(sessionId);
+        String safeId = validateSessionId(sessionId);
         Path root = sessionsRoot.resolve(safeId).normalize();
-        if (!root.startsWith(sessionsRoot)) {
+        if (!root.startsWith(sessionsRoot) || root.equals(sessionsRoot)) {
             throw new IllegalArgumentException("非法 sessionId: " + sessionId);
         }
         return root;
     }
 
-    private static String sanitizeSessionId(String sessionId) {
+    private static String validateSessionId(String sessionId) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId 不能为空");
         }
-        String safe = sessionId.strip().replaceAll("[^A-Za-z0-9._-]", "_");
-        if (safe.isBlank()) {
+        String safe = sessionId.strip();
+        if (!SAFE_SESSION_ID.matcher(safe).matches()
+                || ".".equals(safe)
+                || "..".equals(safe)
+                || safe.chars().allMatch(ch -> ch == '.')
+                || safe.chars().allMatch(ch -> ch == '_')) {
             throw new IllegalArgumentException("非法 sessionId: " + sessionId);
         }
         return safe;

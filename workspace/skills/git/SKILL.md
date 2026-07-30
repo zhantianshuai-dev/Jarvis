@@ -1,7 +1,7 @@
 ---
 name: git
 description: "Load only when the user explicitly asks to push to a remote repository. For status, diff, log, branch, show, or local commit, use the structured git tool directly and do not load this skill."
-metadata: {"vikingbot":{"requires":{"bins":["git"]}}}
+metadata: {"jarvis":{"requires":{"bins":["git"]}}}
 always: false
 ---
 
