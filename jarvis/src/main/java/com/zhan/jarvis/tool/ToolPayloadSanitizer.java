@@ -16,7 +16,7 @@ import java.util.Map;
 
 /**
  * 将工具调用中的大块或敏感字段替换为可追溯摘要。
- * 原始参数仍用于工具执行；清洗后的参数只进入 LLM 历史、SSE 事件和持久化 metadata。
+ * 原始参数仍用于工具执行；清洗后的参数只进入 LLM 历史、SSE 事件和持久化元数据。
  */
 public class ToolPayloadSanitizer {
 
@@ -101,7 +101,7 @@ public class ToolPayloadSanitizer {
     }
 
     private void omitTextField(Map<String, Object> args, String field) {
-        //这里对content_omitted=true作判断，已经处理的字段不会再处理
+        // 这里对 content_omitted=true 作判断，已经处理的字段不会再处理。
         if (Boolean.parseBoolean(String.valueOf(args.get(field + "_omitted")))) {
             return;
         }

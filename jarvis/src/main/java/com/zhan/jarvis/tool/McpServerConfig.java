@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 外部 MCP Server 配置。
+ * 外部 MCP 服务配置。
  */
 public record McpServerConfig(
         String name,

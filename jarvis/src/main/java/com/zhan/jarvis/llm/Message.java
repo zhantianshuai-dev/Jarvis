@@ -5,10 +5,10 @@ import java.util.List;
 /**
  * 对话消息。
  *
- * @param role             system / user / assistant / tool
- * @param content          文本内容（tool 角色时为工具执行结果）
- * @param toolCallId       当 role=tool 时，关联的 tool_call id
- * @param toolCalls        当 role=assistant 且调用了工具时，非空
+ * @param role             消息角色，如系统/用户/助手/工具
+ * @param content          文本内容（工具角色时为工具执行结果）
+ * @param toolCallId       当角色为工具时，关联的工具调用 ID
+ * @param toolCalls        当角色为助手且调用了工具时，非空
  * @param reasoningContent thinking 模式下的推理内容，需在后续请求中原样传回
  */
 public record Message(

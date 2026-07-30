@@ -14,20 +14,20 @@ import java.util.regex.Pattern;
 /**
  * 技能加载器 — 对标 Python SkillsLoader。
  *
- * 扫描 workspace/skills/ 目录，解析 SKILL.md 的 YAML frontmatter + vikingbot metadata，
+ * 扫描工作区 skills 目录，解析 SKILL.md 的 YAML 文件头和 vikingbot 元数据，
  * 实现渐进式加载：
- *   1. always=true 的技能 → 全量注入 system prompt
+ *   1. always=true 的技能 → 全量注入系统提示词
  *   2. 其他技能 → 只注入摘要 XML（agent 按需 read_file 加载）
  *
  * SKILL.md 格式:
  * <pre>
  * ---
  * name: skill-name
- * description: What this skill does
+ * description: 技能说明
  * metadata: {"vikingbot":{"always":true,"requires":{"bins":["tmux"],"env":["API_KEY"]}}}
  * ---
  *
- * # Skill content (markdown)
+ * # 技能正文（Markdown）
  * </pre>
  */
 public class SkillsLoader {
@@ -80,7 +80,7 @@ public class SkillsLoader {
     }
 
     /**
-     * 获取 always=true 且满足依赖的技能名称列表。
+     * 获取 always=true 且依赖已满足的技能名称列表。
      */
     public List<String> getAlwaysSkills() {
         return listSkills().stream()
@@ -93,7 +93,7 @@ public class SkillsLoader {
     }
 
     /**
-     * 加载指定技能的内容（去掉 frontmatter）。
+     * 加载指定技能的内容（去掉 YAML 文件头）。
      */
     public String loadSkill(String name) {
         Path skillFile = skillsDir.resolve(name).resolve("SKILL.md");
@@ -122,7 +122,7 @@ public class SkillsLoader {
 
     /**
      * 构建技能摘要 XML（用于渐进式加载）。
-     * agent 需要时通过 read_file 加载完整内容。
+     * Agent 需要时通过 read_file 加载完整内容。
      */
     public String buildSkillsSummary() {
         var skills = listSkills();
@@ -147,7 +147,7 @@ public class SkillsLoader {
         return appended ? sb.toString() : "";
     }
 
-    // ---- internal ----
+    // ---- 内部实现 ----
 
     private String readFile(Path path) {
         try {
@@ -159,7 +159,7 @@ public class SkillsLoader {
     }
 
     /**
-     * 解析 SKILL.md 的 YAML frontmatter。
+     * 解析 SKILL.md 的 YAML 文件头。
      * 简单行解析（对标 Python 的 get_skill_metadata）。
      */
     SkillFrontMatter parseFrontMatter(String content) {
@@ -219,7 +219,7 @@ public class SkillsLoader {
     }
 
     /**
-     * 去掉 content 中的 YAML frontmatter。
+     * 去掉正文中的 YAML 文件头。
      */
     String stripFrontMatter(String content) {
         if (content == null || !content.startsWith("---")) return content;
@@ -231,7 +231,7 @@ public class SkillsLoader {
     }
 
     /**
-     * 从 frontmatter.metadata JSON 中解析 vikingbot 配置。
+     * 从 YAML 文件头的 metadata JSON 中解析 vikingbot 配置。
      */
     SkillMeta parseSkillMeta(String metadata) {
         if (metadata == null || metadata.isBlank()) return SkillMeta.EMPTY;

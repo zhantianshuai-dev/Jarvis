@@ -1,8 +1,8 @@
 package com.zhan.jarvis.hook;
 
 /**
- * Hook 执行结果。
- * 观察型 hook 返回 allow；策略型 hook 可返回 deny 阻断主流程。
+ * 钩子执行结果。
+ * 观察型钩子返回允许；策略型钩子可返回拒绝来阻断主流程。
  */
 public record HookResult(
         boolean allowed,

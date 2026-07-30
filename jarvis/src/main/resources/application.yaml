@@ -67,6 +67,12 @@ jarvis:
       - id: project
         label: openViking project
         path: ${JARVIS_PROJECT_WORKSPACE:.}
+    context-budget:
+      enabled: ${JARVIS_CONTEXT_BUDGET_ENABLED:true}
+      max-input-tokens: ${JARVIS_CONTEXT_MAX_INPUT_TOKENS:16000}
+      max-tool-result-chars: ${JARVIS_CONTEXT_MAX_TOOL_RESULT_CHARS:1200}
+      max-context-block-chars: ${JARVIS_CONTEXT_MAX_CONTEXT_BLOCK_CHARS:4000}
+      keep-recent-messages: ${JARVIS_CONTEXT_KEEP_RECENT_MESSAGES:12}
     system-prompt-template: |
 
       你叫Jarvis，是一个 AI Agent个人助手。你可以聊天、回答技术问题，也可以调用工具读取文件、编辑文件、执行命令、检索记忆、访问网页、创建定时任务和派生子任务。

@@ -11,8 +11,8 @@ import java.time.Duration;
 import java.util.Map;
 
 /**
- * HTTP Channel 适配器。
- * ChatRouter 负责 HTTP 协议解析；该类负责把 HTTP 消息转换为 MessageBus 消息。
+ * HTTP 通道适配器。
+ * ChatRouter 负责 HTTP 协议解析；该类负责把 HTTP 消息转换为消息总线消息。
  */
 public class HttpChannel implements Channel {
 
@@ -44,9 +44,9 @@ public class HttpChannel implements Channel {
 
     public OutboundMessage submitAndAwait(String messageId, String sessionId, String userId,
                                           String content, Duration timeout, Map<String, Object> metadata) {
-        //新建一个sessionKey，用于标识哪个通道，哪个会话
+        // 新建会话键，用于标识通道和会话。
         var sessionKey = new SessionKey(type(), CHANNEL_ID, sessionId);
-        //封装为InboundMessage消息
+        // 封装为入站消息。
         var inbound = InboundMessage.of(messageId, sessionKey, sessionId, userId, content, metadata);
         //将消息提交到消息队列中
         var future = messageBus.submit(inbound);

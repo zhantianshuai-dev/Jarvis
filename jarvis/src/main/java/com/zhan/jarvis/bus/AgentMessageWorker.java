@@ -36,7 +36,7 @@ public class AgentMessageWorker {
         while (running) {
             InboundMessage message = null;
             try {
-                //不断尝试去拉取messageBus中的消息
+                // 不断尝试拉取消息总线中的消息。
                 message = bus.take();
                 log.info("消费 InboundMessage: id={}, sessionId={}", message.id(), message.sessionId());
                 String reply = agentLoop.run(message);

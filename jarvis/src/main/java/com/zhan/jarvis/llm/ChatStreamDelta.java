@@ -3,7 +3,7 @@ package com.zhan.jarvis.llm;
 import java.util.List;
 
 /**
- * OpenAI-compatible streaming chunk parsed from one SSE event.
+ * 从单个 SSE 事件中解析出的 OpenAI 兼容流式响应片段。
  */
 public record ChatStreamDelta(
         String content,

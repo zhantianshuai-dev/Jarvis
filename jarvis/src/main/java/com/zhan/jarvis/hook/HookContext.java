@@ -5,7 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Hook 执行上下文。
+ * 钩子执行上下文。
  *
  * @param eventType 生命周期事件名，如 agent.pre_process / tool.post_call
  * @param sessionId 当前会话 ID

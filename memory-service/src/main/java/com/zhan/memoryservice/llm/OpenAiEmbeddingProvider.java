@@ -11,7 +11,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.util.Map;
 
 /**
- * OpenAI 兼容的 Embedding provider，支持百炼 text-embedding-v4 等。
+ * OpenAI 兼容的向量化服务提供商，支持百炼 text-embedding-v4 等。
  * <p>
  * 通过 WebClient 调 /embeddings，apiBase 中已包含版本路径前缀。
  * 代理配置由 WebClientConfig 统一管理，Token 用量自动记录到 H2。
@@ -37,7 +37,7 @@ public class OpenAiEmbeddingProvider implements EmbeddingProvider {
     }
 
     /**
-     * 用于获取embed后的结果，返回float数组
+     * 用于获取向量化后的结果，返回 float 数组。
      */
     @Override
     public float[] embed(String text) {

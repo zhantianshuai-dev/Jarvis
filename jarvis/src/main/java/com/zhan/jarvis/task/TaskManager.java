@@ -16,7 +16,7 @@ import java.util.Optional;
 
 /**
  * 本地任务状态管理。
- * 第一版只服务 subagent 任务，状态写入 workspace/.tasks。
+ * 第一版只服务子 Agent 任务，状态写入工作区的 .tasks 目录。
  */
 public class TaskManager {
 

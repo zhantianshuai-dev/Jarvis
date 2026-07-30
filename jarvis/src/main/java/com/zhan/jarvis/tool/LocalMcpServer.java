@@ -8,10 +8,10 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 本地 MCP Server — 管理内置工具的注册、发现和调用。
+ * 本地 MCP 服务 — 管理内置工具的注册、发现和调用。
  * <p>
  * 对标 MCP 协议的 tools/list 和 tools/call 语义。
- * 内置工具通过此 Server 注册，与外部 MCP 工具使用相同的 ToolDefinition 格式。
+ * 内置工具通过此服务注册，与外部 MCP 工具使用相同的工具定义格式。
  */
 public class LocalMcpServer {
 
@@ -47,7 +47,7 @@ public class LocalMcpServer {
      * tools/call — 按名称调用工具。
      *
      * @param name      工具名称
-     * @param arguments JSON 反序列化后的参数 Map
+     * @param arguments JSON 反序列化后的参数映射
      * @param ctx       运行时上下文
      * @return 工具执行结果
      * @throws IllegalArgumentException 工具未注册时抛出
@@ -83,7 +83,7 @@ public class LocalMcpServer {
 
     /**
      * 将 Jackson JsonNode 递归转换为普通 Map<String, Object>。
-     * 用于将 inputSchema 转为 ToolDefinition 所需的格式。
+     * 用于将输入参数结构转为工具定义所需的格式。
      */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> rawToMap(tools.jackson.databind.JsonNode node) {

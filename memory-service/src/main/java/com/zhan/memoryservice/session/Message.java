@@ -7,8 +7,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 消息模型，对标 Python Message + Part。
- * 一条消息包含多个 Part（文本、工具调用、上下文引用）。
+ * 消息模型，对标 Python 消息和片段。
+ * 一条消息包含多个片段（文本、工具调用、上下文引用）。
  */
 public record Message(
     String id,                  // msg_{uuid}
@@ -54,7 +54,7 @@ public record Message(
     }
 
     /**
-     * Part 片段，对标 Python Part。
+     * 消息片段，对标 Python 片段。
      * type: text | tool | context
      */
     public record Part(

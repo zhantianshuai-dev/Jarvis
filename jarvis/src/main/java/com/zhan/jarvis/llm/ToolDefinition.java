@@ -3,7 +3,7 @@ package com.zhan.jarvis.llm;
 import java.util.Map;
 
 /**
- * 工具定义 — 对标 OpenAI function/tool 格式和 MCP tools/list 响应。
+ * 工具定义 — 对标 OpenAI 函数工具格式和 MCP tools/list 响应。
  *
  * @param name        工具名称
  * @param description 工具描述
@@ -22,7 +22,7 @@ public record ToolDefinition(
         this(name, description, inputSchema, "general", "local", "medium", false);
     }
 
-    /** 转换为 OpenAI tools 格式 */
+    /** 转换为 OpenAI 工具格式。 */
     public Map<String, Object> toOpenAiFormat() {
         return Map.of(
             "type", "function",

@@ -177,7 +177,7 @@ public class JsonlSessionStore implements SessionStore {
         return readAllMessages(sessionId).size();
     }
 
-    // ---- internal ----
+    // ---- 内部实现 ----
 
     private Path sessionDir(String sessionId) {
         if (sessionId == null || sessionId.isBlank()) {

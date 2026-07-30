@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Session-scoped SSE event hub for HTTP clients.
+ * 面向 HTTP 客户端的会话级 SSE 事件中心。
  */
 public class SseEventHub {
 

@@ -21,7 +21,7 @@ import java.util.Set;
 /**
  * 工具注册表 — 聚合本地工具 + 外部 MCP 工具，提供统一入口。
  * <p>
- * AgentLoop 通过此注册表获取可用工具列表和调用工具，无需关心工具来源。
+ * AgentLoop 通过此注册表获取可用工具列表并调用工具，无需关心工具来源。
  */
 public class ToolRegistry {
 
@@ -165,7 +165,7 @@ public class ToolRegistry {
             if (decision.behavior() == ToolPermissionDecision.Behavior.DENY) {
                 throw new HookDecisionException("Tool permission denied: " + decision.reason());
             }
-            //这里检查到需要ASK用户，直接返回给AgentLoop
+            // 这里检查到需要询问用户，直接返回给 AgentLoop。
             if (decision.behavior() == ToolPermissionDecision.Behavior.ASK) {
                 String result = toJson(decision.payload());
                 triggerHook(HookManager.TOOL_POST_CALL, ctx, Map.of(
@@ -229,7 +229,38 @@ public class ToolRegistry {
                 .toList();
     }
 
-    /** 获取本地 Server（供子 Agent 创建受限注册表） */
+    /**
+     * 子 Agent 专用工具集。
+     * 子 Agent 不继承主 Agent 的完整工具面，只暴露完成子任务常用且风险可控的工具组。
+     */
+    public List<ToolDefinition> listToolsForSubagent(String task, Set<String> allowedGroups) {
+        var groups = new LinkedHashSet<String>();
+        groups.add("memory");
+        groups.add("web");
+        groups.add("file");
+        if (allowedGroups != null) {
+            groups.addAll(allowedGroups);
+        }
+        String text = task == null ? "" : task.toLowerCase();
+        if (containsAny(text, "git", "commit", "branch", "分支", "提交", "暂存", "状态", "diff")) {
+            groups.add("git");
+        }
+        if (containsAny(text, "执行", "命令", "脚本", "shell", "测试", "编译", "运行")) {
+            groups.add("exec");
+        }
+        return listTools().stream()
+                .filter(tool -> !TOOL_SEARCH.equals(tool.name()))
+                .filter(tool -> !"spawn".equals(tool.name()))
+                .filter(tool -> !"cron".equals(tool.group()))
+                .filter(tool -> !"image".equals(tool.group()))
+                .filter(tool -> !"feishu".equals(tool.group()))
+                .filter(tool -> !"mcp".equals(tool.group()))
+                .filter(tool -> groups.contains(tool.group()) || groups.contains(tool.name()))
+                .filter(tool -> !tool.deferred() || "git".equals(tool.group()))
+                .toList();
+    }
+
+    /** 获取本地服务（供子 Agent 创建受限注册表） */
     public LocalMcpServer localServer() {
         return localServer;
     }

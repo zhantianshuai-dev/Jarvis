@@ -3,7 +3,7 @@ package com.zhan.memoryservice.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * memory-service runtime configuration.
+ * memory-service 运行时配置。
  */
 @ConfigurationProperties(prefix = "memory-service")
 public record MemoryServiceConfig(
@@ -16,7 +16,7 @@ public record MemoryServiceConfig(
 ) {
 
     /**
-     * Session 存储配置。
+     * 会话存储配置。
      */
     public record SessionWorkspaceConfig(
         String workspace
@@ -24,7 +24,7 @@ public record MemoryServiceConfig(
 
     /**
      * LLM 模型配置。
-     * Used for summary generation, intent analysis, and memory extraction.
+     * 用于摘要生成、意图分析和记忆提取。
      */
     public record LLMConfig(
         String provider,
@@ -36,7 +36,7 @@ public record MemoryServiceConfig(
 
     /**
      * Embedding 向量化模型配置。
-     * Dense embedding model configuration.
+     * 稠密向量模型配置。
      */
     public record EmbeddingConfig(
         String provider,
@@ -77,9 +77,9 @@ public record MemoryServiceConfig(
     }
 
     /**
-     * Rerank 重排序配置（可选）。
-     * Supports Cohere /v1/rerank or compatible rerank APIs.
-     * provider 为空时不启用 rerank，直接使用向量分数。
+     * 重排序配置（可选）。
+     * 支持 Cohere /v1/rerank 或兼容的重排序 API。
+     * 服务提供商为空时不启用重排序，直接使用向量分数。
      */
     public record RerankConfig(
         String provider,         // cohere | openai-compatible | "" (不启用)
@@ -88,7 +88,7 @@ public record MemoryServiceConfig(
         String model,
         double threshold         // 低于此分数过滤
     ) {
-        /** 是否有效配置（provider 非空即为启用） */
+        /** 是否有效配置（服务提供商非空即为启用） */
         public boolean isAvailable() {
             return provider != null && !provider.isBlank();
         }
@@ -96,7 +96,7 @@ public record MemoryServiceConfig(
 
     /**
      * 检索参数配置。
-     * Controls hierarchical retrieval behavior.
+     * 控制层级检索行为。
      */
     public record RetrievalConfig(
         int maxConvergenceRounds,

@@ -118,7 +118,7 @@ public class StdioTransport implements McpTransport {
                     log.debug("[mcp:{} stderr] {}", serverName, line);
                 }
             } catch (IOException ignored) {
-                // Process teardown.
+                // 清理子进程。
             }
         });
     }

@@ -20,11 +20,11 @@ import java.util.HashSet;
 import java.util.List;
 
 /**
- * 检索编排 — 对标 Python SearchService。
+ * 检索编排 — 对标 Python 检索服务。
  *
  * <pre>
- * find(): 纯向量检索，无意图分析 → HierarchicalRetriever.retrieve()
- * search(): 带意图分析 → IntentAnalyzer.analyze() → 多 TypedQuery 并行检索 → 聚合
+ * find(): 纯向量检索，无意图分析 → 层级检索
+ * search(): 带意图分析 → 意图分析 → 多个类型化查询并行检索 → 聚合
  * </pre>
  */
 @Service
@@ -62,7 +62,7 @@ public class SearchService {
 
     /**
      * 带意图分析的检索。
-     * IntentAnalyzer 生成多个 TypedQuery → 并行检索 → 按分数去重聚合。
+     * 意图分析器生成多个类型化查询 → 并行检索 → 按分数去重聚合。
      */
     public FindResult search(String query, int limit, String sessionId) {
         log.info("search: query={}, limit={}, sessionId={}", query, limit, sessionId);
@@ -77,7 +77,7 @@ public class SearchService {
             return find(query, limit);
         }
 
-        // 对每个 TypedQuery 执行层级检索，按优先级排序
+        // 对每个类型化查询执行层级检索，按优先级排序。
         var typedQueries = plan.queries().stream()
                 .sorted(Comparator.comparingInt(TypedQuery::priority))
                 .toList();
@@ -97,7 +97,7 @@ public class SearchService {
         // 按分数重排序
         allMatched.sort(Comparator.comparingDouble(MatchedContext::score).reversed());
 
-        // 截断到 limit
+        // 截断到返回数量限制。
         var finalResults = allMatched.size() > limit
                 ? allMatched.subList(0, limit) : allMatched;
 
@@ -108,7 +108,7 @@ public class SearchService {
     }
 
     /**
-     * 按 contextType 分桶为 FindResult。
+     * 按上下文类型分桶为检索结果。
      */
     private FindResult bucketByType(List<MatchedContext> matched) {
         var memories = new ArrayList<MatchedContext>();

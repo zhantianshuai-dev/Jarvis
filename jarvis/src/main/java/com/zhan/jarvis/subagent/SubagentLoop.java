@@ -11,21 +11,24 @@ import org.slf4j.LoggerFactory;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * 子 Agent 独立循环 — 对标 Python VikingBot SubagentLoop。
+ * 子 Agent 独立循环 — 对标 Python VikingBot 子 Agent 循环。
  * <p>
  * 子 Agent 拥有:
  * - 受限工具集（无 spawn 递归）
  * - 独立迭代上限（15 轮）
- * - 独立 System Prompt
+ * - 独立系统提示词
  */
 public class SubagentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(SubagentLoop.class);
     private static final int MAX_ITERATIONS = 10;
+    private static final int MAX_EXPERIENCE_MEMORY_CHARS = 6_000;
 
     private final String taskId;
     private final String task;
@@ -61,7 +64,7 @@ public class SubagentLoop {
     public String taskId() { return taskId; }
 
     /**
-     * 执行子 Agent 任务（同步阻塞，应在 Virtual Thread 中调用）。
+     * 执行子 Agent 任务（同步阻塞，应在虚拟线程中调用）。
      *
      * @return 子 Agent 执行结果
      */
@@ -81,12 +84,14 @@ public class SubagentLoop {
             var messages = new ArrayList<Message>();
             messages.add(Message.system(buildSubagentSystemPrompt()));
             if (!expContext.isBlank() && !expContext.equals("{}")) {
-                messages.add(Message.system("<experience_memory>\n" + expContext + "\n</experience_memory>"));
+                messages.add(Message.system("<experience_memory>\n"
+                        + truncate(expContext, MAX_EXPERIENCE_MEMORY_CHARS)
+                        + "\n</experience_memory>"));
             }
             messages.add(Message.user(task));
 
-            // 使用受限工具集：子 Agent 不能再派生子 Agent。
-            var restrictedTools = toolRegistry.listToolsExcept("spawn");
+            // 使用受限工具集：子 Agent 不能再派生子 Agent，也不会默认拿到外部 MCP、飞书、图片、定时任务等大工具。
+            var restrictedTools = toolRegistry.listToolsForSubagent(task, allowedToolGroups());
 
             // 子 Agent 循环
             int iteration = 0;
@@ -143,7 +148,23 @@ public class SubagentLoop {
             3. **直接返回**: 任务完成后直接返回结果，不需要总结反思。
             4. **诚实**: 如果无法完成，说明原因。
             """
+                + workspacePrompt()
                 + worktreePrompt();
+    }
+
+    private String workspacePrompt() {
+        Object worktreePath = metadata.get("worktree_path");
+        String executionWorkspace = worktreePath == null || String.valueOf(worktreePath).isBlank()
+                ? workspaceDir
+                : String.valueOf(worktreePath);
+        return """
+
+            ## 执行边界
+
+            你只能围绕当前子任务工作。不要假设自己拥有主 Agent 的完整对话历史。
+            当前执行目录: %s
+            如果缺少必要背景，优先读取相关文件或说明无法判断，不要编造主会话上下文。
+            """.formatted(executionWorkspace);
     }
 
     private String worktreePrompt() {
@@ -158,5 +179,37 @@ public class SubagentLoop {
             当前子任务已绑定独立 Git worktree。所有文件工具、exec 和 git 工具都会在该隔离目录中执行。
             不要切回主 workspace 修改代码；任务完成后返回改动摘要和验证结果。
             """;
+    }
+
+    private Set<String> allowedToolGroups() {
+        Object raw = metadata.get("allowed_tool_groups");
+        var groups = new LinkedHashSet<String>();
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addGroup(groups, item);
+            }
+        } else if (raw instanceof String text) {
+            for (String item : text.split(",")) {
+                addGroup(groups, item);
+            }
+        }
+        return groups;
+    }
+
+    private void addGroup(Set<String> groups, Object value) {
+        if (value == null) {
+            return;
+        }
+        String group = String.valueOf(value).strip().toLowerCase();
+        if (!group.isBlank()) {
+            groups.add(group);
+        }
+    }
+
+    private String truncate(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, maxChars) + "\n...[经验记忆过长，已截断]";
     }
 }

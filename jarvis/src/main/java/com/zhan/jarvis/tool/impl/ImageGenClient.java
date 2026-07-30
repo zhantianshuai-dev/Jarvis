@@ -25,7 +25,7 @@ import java.util.*;
  * 图片生成 HTTP 客户端 — 通过 OpenAI Responses API 调用 gpt-image-2。
  * <p>
  * 使用 /v1/responses 端点，支持多张参考图片（URL 或 base64 data URI），
- * 通过 image_generation tool 触发图片生成。
+ * 通过 image_generation 工具触发图片生成。
  */
 public class ImageGenClient {
 
@@ -41,7 +41,7 @@ public class ImageGenClient {
         var strategies = ExchangeStrategies.builder()
                 .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
                 .build();
-        // 不覆盖 clientConnector，沿用 common 模块 WebClientConfig 配置的 HTTP/1.1 + 代理
+        // 不覆盖客户端连接器，沿用 common 模块 WebClientConfig 配置的 HTTP/1.1 + 代理
         this.webClient = builder
                 .exchangeStrategies(strategies)
                 .baseUrl(stripTrailingSlash(config.apiBase()))
@@ -69,10 +69,10 @@ public class ImageGenClient {
                    + "The reference images show the ACTUAL pet to reproduce.\n\n" + prompt;
         }
 
-        // 1. 构建 input content 数组
+        // 1. 构建输入内容数组
         var contentArray = objectMapper.createArrayNode();
 
-        // 文本 prompt
+        // 文本提示词
         contentArray.addObject()
                 .put("type", "input_text")
                 .put("text", prompt);
@@ -100,7 +100,7 @@ public class ImageGenClient {
             }
         }
 
-        // 构建 user message
+        // 构建用户消息
         var userMessage = objectMapper.createObjectNode();
         userMessage.put("role", "user");
         userMessage.set("content", contentArray);
@@ -108,7 +108,7 @@ public class ImageGenClient {
         var inputArray = objectMapper.createArrayNode();
         inputArray.add(userMessage);
 
-        // tools
+        // 工具定义
         var toolsArray = objectMapper.createArrayNode();
         toolsArray.addObject().put("type", "image_generation");
 
@@ -148,7 +148,7 @@ public class ImageGenClient {
             throw new RuntimeException("图片生成 API 调用失败（重试3次后仍失败）: " + lastException.getMessage(), lastException);
         }
 
-        // 3. 解析响应：从 output 中找 image_generation_call
+        // 3. 解析响应：从输出中找 image_generation_call
         try {
             var root = objectMapper.readTree(responseJson);
             var outputArray = root.get("output");

@@ -28,7 +28,7 @@ public enum MemoryCategory {
         throw new IllegalArgumentException("未知 MemoryCategory: " + v);
     }
 
-    /** profile/preferences/entities 属于 User，其余属于 Agent */
+    /** 画像、偏好、实体属于用户，其余属于 Agent。 */
     public boolean isUserMemory() {
         return this == PROFILE || this == PREFERENCES || this == ENTITIES || this == EVENTS;
     }

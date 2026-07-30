@@ -68,11 +68,11 @@ public class GitPolicyHook implements Hook {
     }
 
     private HookResult allowAfterConfirmCheck(String action, Object metadata) {
-        //这里判断，如果action不是confirm，就直接allow
+        // 这里判断：如果动作不是确认，就直接允许。
         if (!"confirm".equals(action)) {
             return HookResult.allow();
         }
-        //如果是confirm，那就去map中获取META_HUMAN_CONFIRMED，是否有这个
+        // 如果是确认动作，则检查元数据中是否带有人类确认标记。
         if (metadata instanceof Map<?, ?> map && Boolean.parseBoolean(value(map.get(META_HUMAN_CONFIRMED)))) {
             return HookResult.allow();
         }

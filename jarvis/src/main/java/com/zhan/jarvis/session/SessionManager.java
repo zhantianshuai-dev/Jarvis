@@ -16,20 +16,28 @@ public class SessionManager {
     private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
     private final MemoryServiceClient memoryClient;
+    private final SessionFileSpaceManager fileSpaceManager;
 
     public SessionManager(MemoryServiceClient memoryClient) {
+        this(memoryClient, null);
+    }
+
+    public SessionManager(MemoryServiceClient memoryClient, SessionFileSpaceManager fileSpaceManager) {
         this.memoryClient = memoryClient;
+        this.fileSpaceManager = fileSpaceManager;
     }
 
     /** 获取或创建会话 */
     public Session getOrCreate(String sessionId) {
         memoryClient.createSession(sessionId);
+        ensureFileSpace(sessionId);
         return new Session(sessionId);
     }
 
     /** 获取或创建带用户归属的会话 */
     public Session getOrCreate(String sessionId, String ownerUserId) {
         memoryClient.createSession(sessionId, ownerUserId);
+        ensureFileSpace(sessionId);
         return new Session(sessionId);
     }
 
@@ -38,7 +46,7 @@ public class SessionManager {
         memoryClient.addMessage(sessionId, role, content);
     }
 
-    /** 添加带 metadata 的消息（通过 API 写入 memory-service JSONL） */
+    /** 添加带元数据的消息（通过 API 写入 memory-service JSONL） */
     public void addMessage(String sessionId, String role, String content, Map<String, Object> metadata) {
         memoryClient.addMessage(sessionId, role, content, metadata);
     }
@@ -58,5 +66,12 @@ public class SessionManager {
 
     public boolean deleteSession(String sessionId, String ownerUserId) {
         return memoryClient.deleteSession(sessionId, ownerUserId);
+    }
+
+    public SessionFileSpaceManager.SessionFileSpace ensureFileSpace(String sessionId) {
+        if (fileSpaceManager == null) {
+            return null;
+        }
+        return fileSpaceManager.ensure(sessionId);
     }
 }

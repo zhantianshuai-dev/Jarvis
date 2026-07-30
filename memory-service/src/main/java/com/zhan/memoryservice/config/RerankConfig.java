@@ -16,7 +16,7 @@ public class RerankConfig {
     private static final Logger log = LoggerFactory.getLogger(RerankConfig.class);
 
     /**
-     * RerankProvider — 根据配置决定启用百炼 Rerank 或 no-op。
+     * 重排序服务提供商 — 根据配置决定启用百炼重排序或空实现。
      * WebClient.Builder 由 common 模块的 WebClientConfig 提供。
      */
     @Bean
@@ -30,7 +30,7 @@ public class RerankConfig {
         return new NoOpRerankProvider();
     }
 
-    /** Rerank 未配置时的空实现 */
+    /** 未配置重排序时的空实现 */
     static class NoOpRerankProvider implements RerankProvider {
         @Override
         public List<Float> rerank(String query, List<String> documents) {

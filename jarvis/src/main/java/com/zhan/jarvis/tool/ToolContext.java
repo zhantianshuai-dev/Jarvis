@@ -9,10 +9,10 @@ import java.util.Map;
  * 工具执行时的运行时上下文。
  *
  * @param sessionId    当前会话 ID
- * @param sessionKey   当前消息来源的完整 Channel 会话标识
+ * @param sessionKey   当前消息来源的完整通道会话标识
  * @param workspaceDir Agent 工作目录
  * @param userId       用户标识
- * @param metadata     当前 inbound 消息携带的通道元数据
+ * @param metadata     当前入站消息携带的通道元数据
  */
 public record ToolContext(
     String sessionId,
@@ -35,7 +35,7 @@ public record ToolContext(
 
     /**
      * 实际执行工具时使用的工作目录。
-     * 默认等于 workspaceDir；当消息 metadata 中带有 worktree_path 时，工具会落到该 worktree。
+     * 默认等于 workspaceDir；当消息元数据中带有 worktree_path 时，工具会落到该 worktree。
      */
     public String effectiveWorkspaceDir() {
         Path workspace = Path.of(workspaceDir).toAbsolutePath().normalize();

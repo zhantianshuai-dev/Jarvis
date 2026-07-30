@@ -5,7 +5,7 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * MCP JSON-RPC 传输层。
  * <p>
- * 实现类负责把 JSON-RPC 请求发送到外部 MCP Server，并返回 JSON-RPC 响应。
+ * 实现类负责把 JSON-RPC 请求发送到外部 MCP 服务，并返回 JSON-RPC 响应。
  */
 public interface McpTransport extends AutoCloseable {
 

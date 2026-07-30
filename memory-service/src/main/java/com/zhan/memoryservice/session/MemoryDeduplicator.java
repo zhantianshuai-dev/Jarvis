@@ -19,8 +19,8 @@ import tools.jackson.databind.ObjectMapper;
  * 记忆去重器，对标 Python MemoryDeduplicator。
  *
  * 两阶段去重:
- *   1. 向量预筛: 用候选记忆 abstract 向量检索同类已有记忆
- *   2. LLM 决策: skip/create/merge
+     *   1. 向量预筛：用候选记忆摘要向量检索同类已有记忆
+     *   2. LLM 决策：skip/create/merge
  */
 public class MemoryDeduplicator {
 
@@ -51,10 +51,10 @@ public class MemoryDeduplicator {
     /**
      * 对一条候选记忆做去重决策。
      *
-     * @return DedupResult 包含决策和可选的目标 contentId
+     * @return 去重结果，包含决策和可选的目标 contentId
      */
     public DedupResult deduplicate(CandidateMemory candidate) {
-        // Stage 1: 向量预筛 — 找 top-3 相似的同类已有记忆
+        // 阶段 1：向量预筛 — 找 top-3 相似的同类已有记忆
         float[] vec = embedder.embed(candidate.abstractText());
         String filter = "context_type == \"memory\"";
         var similarHits = vectorStore.search(vec, filter, dedupTopK).stream()
@@ -77,7 +77,7 @@ public class MemoryDeduplicator {
             return new DedupResult("create", "无相似已有记忆", null);
         }
 
-        // Stage 2: LLM 决策
+        // 阶段 2：LLM 决策
         var existingText = new StringBuilder();
         for (int i = 0; i < similarMemories.size(); i++) {
             var m = similarMemories.get(i);

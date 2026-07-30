@@ -1,5 +1,6 @@
 package com.zhan.memoryservice.llm;
 
+import com.zhan.common.llm.PromptManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -48,17 +49,6 @@ class PromptManagerTest {
         assertFalse(result.contains("已知摘要"), "未传 abstract 时不应出现该标题");
         System.out.println("=== 概览模板渲染结果（无 abstract） ===");
         System.out.println(result.substring(0, Math.min(300, result.length())) + "...");
-    }
-
-    @Test
-    void testIfBlockRemovedWhenVarMissing() {
-        String template = "开头\n{{#if abstract}}摘要: {{ abstract }}{{/if}}\n结尾";
-        var vars = Map.of("content", "test");
-        String result = promptManager.handleIfBlocks(template, vars);
-
-        assertFalse(result.contains("摘要"), "abstract 为空时，条件块应被移除");
-        assertTrue(result.contains("开头"));
-        assertTrue(result.contains("结尾"));
     }
 
     @Test

@@ -13,8 +13,8 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 
 /**
- * 意图分析器，对标 Python IntentAnalyzer。
- * 调用 LLM 分析会话上下文，生成 QueryPlan（多个 TypedQuery）。
+ * 意图分析器，对标 Python 意图分析器。
+ * 调用 LLM 分析会话上下文，生成查询计划（多个类型化查询）。
  */
 public class IntentAnalyzer {
 
@@ -38,7 +38,7 @@ public class IntentAnalyzer {
      * @param compressionSummary 会话压缩摘要（可为空）
      * @param currentMessage     当前用户消息
      * @param contextType        限定类型（可为 null）
-     * @return QueryPlan
+     * @return 查询计划
      */
     public QueryPlan analyze(String compressionSummary, String currentMessage, ContextType contextType) {
         var vars = new HashMap<String, String>();

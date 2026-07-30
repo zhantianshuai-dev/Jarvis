@@ -12,12 +12,12 @@ public record SearchRequest(
         if (limit <= 0) limit = 10;
     }
 
-    /** 纯语义检索（无 session 上下文） */
+    /** 纯语义检索（无会话上下文） */
     public static SearchRequest find(String query, int limit) {
         return new SearchRequest(query, limit, null);
     }
 
-    /** 带 session 上下文的检索 */
+    /** 带会话上下文的检索 */
     public static SearchRequest search(String query, int limit, String sessionId) {
         return new SearchRequest(query, limit, sessionId);
     }

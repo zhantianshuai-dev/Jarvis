@@ -3,7 +3,7 @@ package com.zhan.jarvis.llm;
 import java.util.Map;
 
 /**
- * LLM provider lifecycle event emitted while streaming.
+ * 流式输出过程中产生的 LLM 服务提供商生命周期事件。
  */
 public record LlmProviderEvent(
         String type,

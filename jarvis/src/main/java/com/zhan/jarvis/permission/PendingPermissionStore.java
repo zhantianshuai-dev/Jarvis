@@ -7,7 +7,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 内存版 pending permission 存储。
+ * 内存版待确认权限存储。
  * 第一版服务重启后全部失效，符合“确认只对当前运行态有效”的安全原则。
  */
 @Component
@@ -17,7 +17,7 @@ public class PendingPermissionStore {
 
     public void put(PendingToolPermission permission) {
         cleanupExpired();
-        //存储形式 key： confirmId ，value： permission
+        // 存储形式：key 为确认 ID，value 为待确认权限。
         permissions.put(permission.confirmId(), permission);
     }
 

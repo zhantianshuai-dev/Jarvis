@@ -15,7 +15,7 @@ import java.util.UUID;
 
 /**
  * 所有工具调用前的权限网关。
- * 第一版先把 Git 远程/破坏性操作升级为通用 pending permission。
+ * 第一版先把 Git 远程/破坏性操作升级为通用待确认权限。
  */
 @Component
 public class ToolPermissionManager {
@@ -35,7 +35,7 @@ public class ToolPermissionManager {
         if (isHumanConfirmed(ctx)) {
             return ToolPermissionDecision.allow();
         }
-        //如果是git命令，就开始校验
+        // 如果是 Git 命令，就开始校验。
         if ("git".equals(toolName)) {
             return evaluateGit(arguments, ctx);
         }
@@ -89,11 +89,11 @@ public class ToolPermissionManager {
         payload.put("message", message);
         payload.put("expires_at", expiresAt.toString());
         payload.put("confirm_endpoint", CONFIRM_ENDPOINT);
-        //这里返回ask给agentLoop，说明这是需要询问用户的
+        // 这里返回询问决策给 Agent 循环，说明需要询问用户。
         return ToolPermissionDecision.ask(payload);
     }
 
-    //这里校验human_confirmed=true，如果不为true，就返回false
+    // 这里校验 human_confirmed=true，如果不为 true，就返回 false。
     private static boolean isHumanConfirmed(ToolContext ctx) {
         Map<String, Object> metadata = ctx.metadata();
         if (metadata == null) {

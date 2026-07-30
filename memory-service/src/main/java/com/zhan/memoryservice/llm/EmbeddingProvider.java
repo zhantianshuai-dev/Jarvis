@@ -1,7 +1,7 @@
 package com.zhan.memoryservice.llm;
 
 /**
- * Embedding 调用接口 — 文本转向量。
+ * 向量化调用接口 — 文本转向量。
  */
 public interface EmbeddingProvider {
 

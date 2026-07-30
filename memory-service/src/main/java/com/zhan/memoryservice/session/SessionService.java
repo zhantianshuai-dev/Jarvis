@@ -18,17 +18,17 @@ import java.util.Map;
  *
  * <pre>
  * 正常流程:
- *   createSession → addMessage → addMessage → ... (pending_tokens 累积)
- *   → autoCommit (超过阈值) 或 manual commit
- *     → Phase 1 (同步): 切分消息、保留最近 N 条、归档旧的
- *     → Phase 2 (后台虚拟线程): LLM 生成 Working Memory → 记忆提取 → 去重 → 写入
+ *   createSession → addMessage → addMessage → ...（pending_tokens 累积）
+ *   → 自动 commit（超过阈值）或手动 commit
+ *     → 阶段 1（同步）：切分消息、保留最近 N 条、归档旧的
+ *     → 阶段 2（后台虚拟线程）：LLM 生成工作记忆 → 记忆提取 → 去重 → 写入
  * </pre>
  */
 public class SessionService {
 
     private static final Logger log = LoggerFactory.getLogger(SessionService.class);
 
-    // pending_tokens 超过此阈值自动触发 commit
+    // 待归档 token 超过此阈值自动触发提交归档。
     private static final int AUTO_COMMIT_TOKEN_THRESHOLD = 8000;
 
     private final SessionStore store;
@@ -37,6 +37,8 @@ public class SessionService {
     private final ContentService contentService;
     private final LLMProvider llm;
     private final PromptManager prompts;
+    private final MemoryExtractionInputFilter memoryInputFilter = new MemoryExtractionInputFilter();
+    private final SessionMessageVisibilityFilter visibilityFilter = new SessionMessageVisibilityFilter();
 
     public SessionService(SessionStore store, MemoryExtractor extractor,
                            MemoryDeduplicator deduplicator, ContentService contentService,
@@ -49,7 +51,7 @@ public class SessionService {
         this.prompts = prompts;
     }
 
-    // ---- Session 生命周期 ----
+    // ---- 会话生命周期 ----
 
     /** 创建或获取会话 */
     public Session createSession(String sessionId) {
@@ -72,19 +74,19 @@ public class SessionService {
         return addMessage(sessionId, role, text, Map.of());
     }
 
-    /** 添加消息，支持可选 metadata 写入 JSONL。 */
+    /** 添加消息，支持可选元数据写入 JSONL。 */
     public Message addMessage(String sessionId, String role, String text, Map<String, Object> metadata) {
         var session = store.get(sessionId);
         var msg = Message.of(role, text, null, metadata);
         store.addMessage(sessionId, msg);
 
-        // 更新 pending_tokens
+        // 更新待归档 token 数
         int msgTokens = msg.estimatedTokens();
         int newPending = session.pendingTokens();
         if (session.keepRecentCount() <= 0) {
             newPending += msgTokens;
         } else if (session.messageCount() + 1 > session.keepRecentCount()) {
-            // 简化滑动窗口: 超出 keep_recent_count 的部分计入 pending
+            // 简化滑动窗口：超出 keep_recent_count 的部分计入待归档 token。
             newPending += msgTokens;
         }
 
@@ -99,7 +101,7 @@ public class SessionService {
                 newPending, session.ownerUserId(), title, session.createdAt(), Instant.now());
         store.update(updated);
 
-        // 自动 commit
+        // 自动提交归档
         if (newPending >= AUTO_COMMIT_TOKEN_THRESHOLD) {
             log.info("pending_tokens={}, 触发自动 commit", newPending);
             commitAsync(sessionId);
@@ -108,11 +110,11 @@ public class SessionService {
         return msg;
     }
 
-    // ---- Commit ----
+    // ---- 提交归档 ----
 
     /**
      * 同步归档 + 后台记忆提取。
-     * Phase 1 同步执行后立即返回，Phase 2 在虚拟线程中运行。
+     * 阶段 1 同步执行后立即返回，阶段 2 在虚拟线程中运行。
      */
     public Map<String, Object> commitAsync(String sessionId) {
         var session = store.get(sessionId);
@@ -139,7 +141,7 @@ public class SessionService {
             return Map.of("session_id", sessionId, "archived", false, "reason", "all_within_keep_window");
         }
 
-        // 更新 session 元数据
+        // 更新会话元数据
         int remainingCount = store.messageCount(sessionId);
         var updated = new Session(session.sessionId(), remainingCount, session.totalTurns(),
                 session.compressionCount() + 1, session.keepRecentCount(), 0,
@@ -149,7 +151,7 @@ public class SessionService {
         int count = updated.compressionCount();
         log.info("归档完成: archive_{}, {} 条消息", String.format("%03d", count), toArchive.size());
 
-        // Phase 2: 后台记忆提取
+        // 阶段 2：后台记忆提取
         var msgs = List.copyOf(toArchive); // 捕获用于异步
         Thread.startVirtualThread(() -> runMemoryExtraction(sessionId, count, msgs));
 
@@ -158,10 +160,10 @@ public class SessionService {
                 "archived_count", toArchive.size());
     }
 
-    /** 手动 commit（指定保留最近 N 条） */
+    /** 手动提交归档（指定保留最近 N 条） */
     public Map<String, Object> commit(String sessionId, int keepRecentCount) {
         var session = store.get(sessionId);
-        // 更新 keep_recent_count
+        // 更新最近消息保留数量。
         var tmp = new Session(session.sessionId(), session.messageCount(), session.totalTurns(),
                 session.compressionCount(), keepRecentCount, session.pendingTokens(),
                 session.ownerUserId(), session.title(), session.createdAt(), session.updatedAt());
@@ -198,7 +200,7 @@ public class SessionService {
         result.put("owner_user_id", session.ownerUserId() != null ? session.ownerUserId() : "");
         result.put("title", session.title() != null && !session.title().isBlank() ? session.title() : "新的对话");
         result.put("messages", source.stream()
-                .filter(m -> !Boolean.TRUE.equals(m.metadata().get("trace")))
+                .filter(visibilityFilter::visibleForDisplay)
                 .map(this::messageView)
                 .toList());
         return result;
@@ -220,25 +222,31 @@ public class SessionService {
         );
     }
 
-    // ---- Phase 2: 记忆提取（后台） ----
+    // ---- 阶段 2：记忆提取（后台） ----
 
     private void runMemoryExtraction(String sessionId, int archiveIndex, List<Message> messages) {
         try {
             log.info("Phase 2 开始: archive_{}, {} 条消息", String.format("%03d", archiveIndex), messages.size());
 
-            // 1. 生成 Working Memory
+            // 1. 生成工作记忆
             String workingMemory = generateWorkingMemory(messages);
             log.info("Working Memory 生成完成: {} 字符", workingMemory.length());
 
-            // 2. 写入 Working Memory 作为 context 条目
+            // 2. 写入工作记忆作为上下文条目
             String wmId = sessionId + "_wm_" + String.format("%03d", archiveIndex);
             contentService.write(new WriteRequest(wmId, workingMemory, ContextType.MEMORY, sessionId));
 
-            // 3. 提取记忆
-            var candidates = extractor.extract(messages);
+            // 3. 过滤长期记忆提取输入，避免工具结果、隐藏上下文和追踪消息污染记忆。
+            var filtered = memoryInputFilter.filter(messages);
+            log.info("记忆提取输入过滤: 原始={}，保留={}，跳过={}，截断={}",
+                    filtered.originalCount(), filtered.messages().size(),
+                    filtered.skippedCount(), filtered.truncatedCount());
+
+            // 4. 提取记忆
+            var candidates = extractor.extract(filtered.messages());
             log.info("提取 {} 条候选记忆", candidates.size());
 
-            // 4. 去重 + 写入
+            // 5. 去重 + 写入
             int created = 0;
             int skipped = 0;
             for (var c : candidates) {
@@ -253,7 +261,7 @@ public class SessionService {
                         created++;
                     }
                     case "merge" -> {
-                        // 简化: merge 也创建新条目（不实现合并编辑逻辑）
+                        // 简化：merge 也创建新条目（不实现合并编辑逻辑）
                         String fullContent = "## " + c.category().value() + " (merged)\n\n"
                                 + c.abstractText() + "\n\n" + c.overview() + "\n\n" + c.content();
                         String memId = sessionId + "_mem_" + String.format("%03d", archiveIndex) + "_m" + (created + 1);
@@ -270,7 +278,7 @@ public class SessionService {
         }
     }
 
-    // ---- Working Memory 生成 ----
+    // ---- 工作记忆生成 ----
 
     private String generateWorkingMemory(List<Message> messages) {
         var sb = new StringBuilder();
@@ -314,13 +322,13 @@ public class SessionService {
 
     /**
      * 获取会话上下文（对标 Jarvis get_session_context）。
-     * 返回 Working Memory + 最近 N 条消息。
-     * memory-service 是 Session 的唯一 owner，Jarvis 不自己管理上下文。
+     * 返回工作记忆 + 最近 N 条消息。
+     * memory-service 是会话的唯一拥有者，Jarvis 不自己管理上下文。
      */
     public Map<String, Object> getSessionContext(String sessionId, int maxMessages) {
         var session = store.get(sessionId);
 
-        // 取最新的 archive overview（对标 Jarvis 的 latest_archive_overview）
+        // 取最新的归档概览（对标 Jarvis 的 latest_archive_overview）。
         String workingMemory = "";
         for (int i = session.compressionCount(); i >= 1; i--) {
             var entry = contentService.getById(sessionId + "_wm_" + String.format("%03d", i));
@@ -341,12 +349,9 @@ public class SessionService {
         var result = new LinkedHashMap<String, Object>();
         result.put("working_memory", workingMemory != null ? workingMemory : "");
         result.put("messages", recentMsgs.stream()
-                .filter(m -> !Boolean.TRUE.equals(m.metadata().get("trace")))
+                .filter(visibilityFilter::visibleForRuntimeContext)
                 .map(m -> Map.of("role", m.role(),
-                        "content", m.parts().stream()
-                                .filter(p -> "text".equals(p.type()))
-                                .map(Message.Part::text)
-                                .reduce("", (a, b) -> a + b)))
+                        "content", visibilityFilter.textOf(m)))
                 .toList());
         result.put("message_count", recentMsgs.size());
         result.put("compression_count", session.compressionCount());

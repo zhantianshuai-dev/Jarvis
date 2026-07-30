@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Cron 定时任务定义，对齐 Jarvis CronStore。
+ * Cron 定时任务定义，对齐 Jarvis 定时任务存储。
  */
 public class CronJob {
 

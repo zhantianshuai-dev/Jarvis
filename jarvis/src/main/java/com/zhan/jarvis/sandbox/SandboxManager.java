@@ -5,7 +5,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * Sandbox 统一入口。
+ * 沙箱统一入口。
  * 后续切换 DockerBackend 或 RemoteBackend 时，工具层无需改动。
  */
 public class SandboxManager {

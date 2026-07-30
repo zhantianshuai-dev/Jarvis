@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
- * 管理 Jarvis workspace 下的 Git worktree。
+ * 管理 Jarvis 工作区下的 Git worktree。
  * 状态写入 .worktrees/index.json，生命周期事件写入 .worktrees/events.jsonl。
  */
 public class WorktreeManager {
@@ -69,7 +69,7 @@ public class WorktreeManager {
 
             Files.createDirectories(worktreesDir);
             appendEvent("worktree.create.before", Map.of("name", name, "branch", branch, "base_ref", safeBaseRef));
-            //这里执行git worktree add 脚本
+            // 这里执行 git worktree add 命令。
             GitProcessResult result = runGit(List.of(
                     "git", "worktree", "add", "-b", branch, workspace.relativize(path).toString(), safeBaseRef
             ), workspace);

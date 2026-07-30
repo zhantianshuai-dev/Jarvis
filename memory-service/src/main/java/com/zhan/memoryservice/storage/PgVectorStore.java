@@ -17,7 +17,7 @@ import java.util.*;
 /**
  * PostgreSQL + pgvector 统一存储 — 向量 + 元数据二合一。
  * <p>
- * 同时实现 VectorStore 和 MetadataStore，共享同一张 context_entry 表。
+ * 同时实现向量存储和元数据存储，共享同一张 context_entry 表。
  * pgvector HNSW 索引替代 Milvus 的 ANN 检索。
  */
 @Component
@@ -69,7 +69,7 @@ public class PgVectorStore implements VectorStore, MetadataStore {
         }
     }
 
-    // ==================== VectorStore ====================
+    // ==================== 向量存储 ====================
 
     @Override
     public void insert(String contentId, float[] vector, String contextType, String parentId, int level) {
@@ -133,7 +133,7 @@ public class PgVectorStore implements VectorStore, MetadataStore {
                 .replace("\"", "'");     // Milvus 字符串引号 → SQL 单引号
     }
 
-    // ==================== MetadataStore ====================
+    // ==================== 元数据存储 ====================
 
     @Override
     public void save(ContextEntry entry) {

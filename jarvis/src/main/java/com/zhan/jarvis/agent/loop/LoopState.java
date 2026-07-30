@@ -12,6 +12,7 @@ import java.util.Set;
  * AgentLoop 单次运行状态。
  */
 public record LoopState(
+        String runId,
         SessionKey sessionKey,
         String sessionId,
         String userId,

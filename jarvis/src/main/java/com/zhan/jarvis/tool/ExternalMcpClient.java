@@ -11,9 +11,9 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 外部 MCP Server Client。
+ * 外部 MCP 服务客户端。
  * <p>
- * 对外暴露的工具名采用 {@code serverName__toolName}，避免与本地工具或其他 MCP Server 冲突。
+ * 对外暴露的工具名采用 {@code serverName__toolName}，避免与本地工具或其他 MCP 服务冲突。
  */
 public class ExternalMcpClient implements McpClient {
 

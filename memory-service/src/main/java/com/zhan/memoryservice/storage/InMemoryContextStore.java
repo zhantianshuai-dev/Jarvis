@@ -13,8 +13,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * PostgreSQL disabled fallback store.
- * Data is process-local and is lost after restart.
+ * PostgreSQL 关闭时使用的兜底存储。
+ * 数据仅保存在当前进程内，重启后会丢失。
  */
 public class InMemoryContextStore implements VectorStore, MetadataStore {
 

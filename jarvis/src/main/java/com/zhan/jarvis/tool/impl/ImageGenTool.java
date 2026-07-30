@@ -19,8 +19,8 @@ import java.util.regex.Pattern;
 /**
  * imagegen 工具 — 对标 Codex $imagegen，调用 gpt-image-2 模型生成图片。
  * <p>
- * 支持基于参考图片的图像生成：传入 pets 照片等参考图片路径，
- * gpt-image-2 根据参考图片和 prompt 描述生成目标图片。
+ * 支持基于参考图片的图像生成：传入宠物照片等参考图片路径，
+ * gpt-image-2 根据参考图片和提示词描述生成目标图片。
  */
 public class ImageGenTool implements McpTool {
 
@@ -73,7 +73,7 @@ public class ImageGenTool implements McpTool {
             return "错误: 缺少 prompt 参数";
         }
 
-        // 提取参考图片路径列表，相对路径自动拼上 workspace
+        // 提取参考图片路径列表，相对路径自动拼上工作区。
         List<String> referencePaths = new ArrayList<>();
         Object refObj = arguments.get("reference_images");
         if (refObj instanceof List<?> list) {
@@ -84,7 +84,7 @@ public class ImageGenTool implements McpTool {
             }
         }
 
-        // 兜底：如果 prompt 中包含 URL，自动提取到参考图列表
+        // 兜底：如果提示词中包含 URL，自动提取到参考图列表。
         var urlPattern = Pattern.compile("https?://[^\\s]+");
         var urlMatcher = urlPattern.matcher(prompt);
         while (urlMatcher.find()) {
@@ -106,7 +106,7 @@ public class ImageGenTool implements McpTool {
         }
     }
 
-    /** URL 原样返回；本地路径先尝试相对 workspace 解析，文件不存在时递归搜索 workspace 下同名文件 */
+    /** URL 原样返回；本地路径先尝试相对工作区解析，文件不存在时递归搜索工作区下同名文件。 */
     private static String resolveRefPath(String rawPath, String workspaceDir) {
         if (rawPath.startsWith("http://") || rawPath.startsWith("https://")) {
             return rawPath;
@@ -117,14 +117,14 @@ public class ImageGenTool implements McpTool {
             if (Files.exists(p)) return rawPath;
             return searchByFileName(p.getFileName().toString(), workspaceDir);
         }
-        // 相对路径：先拼 workspace，不存在则按文件名搜索
+        // 相对路径：先拼工作区，不存在则按文件名搜索。
         Path resolved = Path.of(workspaceDir).resolve(rawPath).normalize();
         if (Files.exists(resolved)) return resolved.toString();
         log.debug("路径不存在，尝试按文件名搜索: {} (已尝试: {})", rawPath, resolved);
         return searchByFileName(p.getFileName().toString(), workspaceDir);
     }
 
-    /** 在 workspace 下递归搜索同名文件（最多 5 层），找到返回绝对路径，找不到返回 workspace 下的拼接路径 */
+    /** 在工作区下递归搜索同名文件（最多 5 层），找到返回绝对路径，找不到返回工作区下的拼接路径。 */
     private static String searchByFileName(String fileName, String workspaceDir) {
         try {
             var ws = Path.of(workspaceDir);
@@ -142,7 +142,7 @@ public class ImageGenTool implements McpTool {
         } catch (IOException ignored) {
             log.debug("文件名搜索异常: {}", ignored.getMessage());
         }
-        // 最终兜底：拼到 workspace 下
+        // 最终兜底：拼到工作区下。
         return Path.of(workspaceDir).resolve(fileName).normalize().toString();
     }
 }

@@ -3,8 +3,8 @@ package com.zhan.memoryservice.model;
 import java.util.List;
 
 /**
- * 带类型的查询，对标 Python TypedQuery。
- * IntentAnalyzer 输出的一个子查询，指定目标 context_type 和优先级。
+ * 带类型的查询，对标 Python 类型化查询。
+ * 意图分析器输出的一个子查询，指定目标上下文类型和优先级。
  */
 public record TypedQuery(
     String query,                  // 查询文本

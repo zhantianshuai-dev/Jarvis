@@ -65,7 +65,7 @@ public class ChatRouter {
     /**
      * POST /api/v1/chat — 发送消息获取回复。
      * <p>
-     * Agent 循环运行在独立 Virtual Thread 上，不受客户端断开影响。
+     * Agent 循环运行在独立虚拟线程上，不受客户端断开影响。
      * 即使客户端超时断开，Agent 仍会在后台继续执行直到完成。
      */
     private Mono<ServerResponse> handleChat(ServerRequest req) {

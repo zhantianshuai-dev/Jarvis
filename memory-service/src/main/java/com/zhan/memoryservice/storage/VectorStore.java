@@ -19,7 +19,7 @@ public interface VectorStore {
      */
     List<SearchHit> search(float[] vector, String filter, int topK);
 
-    /** 确保 Collection 已创建（幂等） */
+    /** 确保存储集合已创建（幂等） */
     void ensureCollection();
 
     /** 搜索结果，包含 Milvus 中存储的标量元数据 */

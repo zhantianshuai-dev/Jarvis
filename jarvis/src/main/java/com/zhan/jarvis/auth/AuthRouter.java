@@ -25,13 +25,13 @@ public class AuthRouter {
 
     public AuthRouter(JarvisConfig config, org.springframework.beans.factory.ObjectProvider<AuthService> authService) {
         this.config = config;
-        // AuthService 在 jarvis.auth.enabled=false 时不会创建，所以这里用 ObjectProvider 做可选注入。
+        // 认证关闭时认证服务不会创建，所以这里用 ObjectProvider 做可选注入。
         this.authService = authService.getIfAvailable();
     }
 
     @Bean
     public RouterFunction<ServerResponse> authRoute() {
-        // WebFlux 函数式路由：这里负责 HTTP 协议层，具体账号逻辑放在 AuthService。
+        // WebFlux 函数式路由：这里负责 HTTP 协议层，具体账号逻辑放在认证服务。
         return route(POST("/api/v1/auth/login"), this::handleLogin)
                 .andRoute(POST("/api/v1/auth/register"), this::handleRegister)
                 .andRoute(GET("/api/v1/auth/me"), this::handleMe)
@@ -46,7 +46,7 @@ public class AuthRouter {
         return req.bodyToMono(AuthModels.LoginRequest.class)
                 .flatMap(body -> Mono.fromCallable(() ->
                                 authService.login(body.username(), body.password(), clientIp(req)))
-                        // BCrypt 和 JDBC 都是阻塞操作，不能占用 Netty event-loop。
+                        // BCrypt 和 JDBC 都是阻塞操作，不能占用 Netty 事件循环。
                         .subscribeOn(Schedulers.boundedElastic()))
                 .flatMap(body -> ServerResponse.ok().bodyValue(body))
                 .onErrorResume(AuthService.AuthException.class, e ->
@@ -74,7 +74,7 @@ public class AuthRouter {
             return authDisabled();
         }
         return Mono.fromCallable(() -> authService.me(resolveToken(req)))
-                // verifyToken 会访问 Sa-Token 存储和 PostgreSQL 用户表。
+                // 验证令牌会访问 Sa-Token 存储和 PostgreSQL 用户表。
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(body -> ServerResponse.ok().bodyValue(body))
                 .onErrorResume(Exception.class, e ->
@@ -87,7 +87,7 @@ public class AuthRouter {
             return authDisabled();
         }
         return Mono.fromRunnable(() -> authService.logout(resolveToken(req)))
-                // 保持与其它认证接口一致，避免阻塞 event-loop。
+                // 保持与其他认证接口一致，避免阻塞事件循环。
                 .subscribeOn(Schedulers.boundedElastic())
                 .then(ServerResponse.ok().bodyValue(Map.of("success", true)))
                 .onErrorResume(Exception.class, e ->
@@ -125,7 +125,7 @@ public class AuthRouter {
     }
 
     private String resolveToken(ServerRequest req) {
-        // 主路径使用 Authorization: Bearer；query 参数用于 SSE/EventSource 等不方便带 header 的场景。
+        // 主路径使用 Authorization: Bearer；查询参数用于 SSE/EventSource 等不方便带请求头的场景。
         String header = req.headers().firstHeader(HttpHeaders.AUTHORIZATION);
         if (header != null && !header.isBlank()) {
             String value = header.strip();

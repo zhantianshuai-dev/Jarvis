@@ -4,8 +4,8 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 会话模型，对标 Python Session 核心字段。
- * Session 代表一段对话的生命周期。
+ * 会话模型，对标 Python 会话核心字段。
+ * 会话代表一段对话的生命周期。
  */
 public record Session(
     String sessionId,           // 会话唯一标识
@@ -35,13 +35,13 @@ public record Session(
     }
 
     public Session withMessageAdded(int msgTokens, boolean isUser) {
-        // 滑动窗口: keep_recent_count == 0 → 每条消息贡献 pending
-        // keep_recent_count > 0 → 只有被推出窗口的消息才贡献 pending
+        // 滑动窗口：keep_recent_count == 0 → 每条消息贡献待归档 token。
+        // keep_recent_count > 0 → 只有被推出窗口的消息才贡献待归档 token。
         int newPending = pendingTokens;
         if (keepRecentCount <= 0) {
             newPending += msgTokens;
         }
-        // (简化：实际滑动窗口逻辑在 SessionService 中处理)
+        // （简化：实际滑动窗口逻辑在会话服务中处理）
         return new Session(sessionId, messageCount + 1,
                 isUser ? totalTurns + 1 : totalTurns,
                 compressionCount, keepRecentCount, newPending, ownerUserId, title, createdAt, Instant.now());

@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
- * Prompt 模板管理器 — 加载 resources/prompts/ 下的 .st 模板文件。
+ * 提示词模板管理器 — 加载 resources/prompts/ 下的 .st 模板文件。
  * <p>
  * .st 文件格式：
  * <pre>{@code

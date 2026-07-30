@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Agent 运行轨迹 Hook。
+ * Agent 运行轨迹钩子。
  * 记录用户输入进入 Agent 和最终回复生成事件。
  */
 public class AgentTraceHook implements Hook {

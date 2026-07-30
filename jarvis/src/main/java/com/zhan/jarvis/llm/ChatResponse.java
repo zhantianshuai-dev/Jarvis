@@ -5,9 +5,9 @@ import java.util.List;
 /**
  * LLM 聊天响应。
  *
- * @param content    文本回复（无 tool_calls 时）
- * @param toolCalls  工具调用列表（有 tool_calls 时）
- * @param finishReason stop / tool_calls / length
+ * @param content    文本回复（无工具调用时）
+ * @param toolCalls  工具调用列表（有工具调用时）
+ * @param finishReason 结束原因，如 stop / tool_calls / length
  * @param usage       Token 使用统计
  */
 public record ChatResponse(

@@ -12,12 +12,12 @@ public interface Channel {
 
     /** 启动通道。 */
     default void start() {
-        // Optional.
+        // 可选实现。
     }
 
     /** 停止通道。 */
     default void stop() {
-        // Optional.
+        // 可选实现。
     }
 
     /** 发送 Agent 输出消息。 */

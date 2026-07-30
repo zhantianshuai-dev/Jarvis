@@ -5,17 +5,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * SessionStore — 会话和消息的持久化接口。
+ * 会话存储 — 会话和消息的持久化接口。
  */
 public interface SessionStore {
 
-    /** 创建或获取 Session */
+    /** 创建或获取会话 */
     Session createOrGet(String sessionId, int keepRecentCount);
 
-    /** 获取 Session 元数据 */
+    /** 获取会话元数据 */
     Session get(String sessionId);
 
-    /** 更新 Session 元数据 */
+    /** 更新会话元数据 */
     void update(Session session);
 
     /** 追加一条消息 */

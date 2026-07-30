@@ -17,7 +17,7 @@ import java.util.UUID;
 /**
  * 内容写入编排 — 对标 Python ResourceProcessor + ContentWriteCoordinator。
  * <p>
- * 流程：校验 → 写入 H2 → (异步) LLM 生成 abstract+overview → Embedding → 写入 Milvus → 更新 H2
+ * 流程：校验 → 写入 H2 →（异步）LLM 生成摘要和概览 → 向量化 → 写入 Milvus → 更新 H2
  * 异步部分使用虚拟线程。
  */
 @Service
@@ -61,7 +61,7 @@ public class ContentService {
         return new WriteResult(contentId, "queued", "queued");
     }
 
-    /** 按 ID 查询条目（供 SessionService 读取 Working Memory） */
+    /** 按 ID 查询条目（供会话服务读取工作记忆） */
     public ContextEntry getById(String contentId) {
         return metadata.getById(contentId).orElse(null);
     }
@@ -84,7 +84,7 @@ public class ContentService {
             );
             log.debug("概览完成: contentId={}, len={}", contentId, overview.length());
 
-            // 2c. Embedding
+            // 2c. 向量化
             float[] vectorArr = embedder.embed(abstractText);
             log.debug("向量化完成: contentId={}, dim={}", contentId, vectorArr.length);
 

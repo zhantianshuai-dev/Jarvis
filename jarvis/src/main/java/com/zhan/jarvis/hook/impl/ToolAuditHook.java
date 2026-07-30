@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 工具调用审计 Hook。
+ * 工具调用审计钩子。
  * 记录工具调用开始、结束、耗时和成功/失败状态。
  */
 public class ToolAuditHook implements Hook {

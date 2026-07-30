@@ -24,6 +24,7 @@ import com.zhan.jarvis.sandbox.DirectBackend;
 import com.zhan.jarvis.sandbox.SandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxManager;
 import com.zhan.jarvis.server.sse.SseEventHub;
+import com.zhan.jarvis.session.SessionFileSpaceManager;
 import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.skill.SkillsLoader;
 import com.zhan.jarvis.subagent.SubagentManager;
@@ -69,7 +70,7 @@ public class AppConfig {
                 config.agent().name(), config.agent().maxIterations(), config.agent().workspace());
     }
 
-    // ---- 1.2 AgentLLMProvider ----
+    // ---- 1.2 Agent LLM 服务提供商 ----
 
     @Bean
     public static AgentLLMProvider agentLLMProvider(JarvisConfig config, ObjectMapper objectMapper,
@@ -78,7 +79,7 @@ public class AppConfig {
         return new OpenAiAgentLLMProvider(config.llm(), objectMapper, builder);
     }
 
-    // ---- 1.5 MemoryServiceClient ----
+    // ---- 1.5 记忆服务客户端 ----
 
     @Bean
     public static MemoryServiceClient memoryServiceClient(JarvisConfig config, WebClient.Builder builder,
@@ -86,7 +87,7 @@ public class AppConfig {
         return new MemoryServiceClient(config.memoryService(), builder, objectMapper);
     }
 
-    // ---- ImageGenClient ----
+    // ---- 图片生成客户端 ----
 
     @Bean
     public static ImageGenClient imageGenClient(JarvisConfig config, WebClient.Builder builder,
@@ -95,11 +96,16 @@ public class AppConfig {
         return new ImageGenClient(config.imageGen(), builder, objectMapper);
     }
 
-    // ---- 1.6 Session（委托 memory-service 管理） ----
+    // ---- 1.6 会话（委托 memory-service 管理） ----
 
     @Bean
-    public SessionManager sessionManager(MemoryServiceClient memoryClient) {
-        return new SessionManager(memoryClient);
+    public SessionFileSpaceManager sessionFileSpaceManager(JarvisConfig config) {
+        return new SessionFileSpaceManager(config.agent().workspace());
+    }
+
+    @Bean
+    public SessionManager sessionManager(MemoryServiceClient memoryClient, SessionFileSpaceManager fileSpaceManager) {
+        return new SessionManager(memoryClient, fileSpaceManager);
     }
 
     // ---- 2.5 Hook 系统 ----
@@ -116,7 +122,7 @@ public class AppConfig {
         return manager;
     }
 
-    // ---- 2.8 Sandbox 抽象 ----
+    // ---- 2.8 沙箱抽象 ----
 
     @Bean
     public SandboxBackend sandboxBackend() {
@@ -143,7 +149,7 @@ public class AppConfig {
         return new TaskManager(objectMapper, config.agent().workspace());
     }
 
-    // ---- 1.3 + 1.4 Tool 系统 ----
+    // ---- 1.3 + 1.4 工具系统 ----
 
     @Bean
     public LocalMcpServer localMcpServer(ObjectMapper objectMapper, MemoryServiceClient memoryClient,
@@ -151,7 +157,7 @@ public class AppConfig {
                                          CronService cronService, WebClient.Builder builder,
                                          JarvisConfig config) {
         var server = new LocalMcpServer();
-        // 基础工具（spawn 工具稍后通过 SpawnToolInitializer 注册，避免循环依赖）
+        // 基础工具（spawn 工具稍后通过派生工具初始化器注册，避免循环依赖）
         server.registerAll(
                 new ReadFileTool(objectMapper, sandboxManager),
                 new WriteFileTool(objectMapper, sandboxManager),
@@ -183,7 +189,7 @@ public class AppConfig {
                 permissionManager, objectMapper);
     }
 
-    // ---- 1.9 SubagentManager ----
+    // ---- 1.9 子 Agent 管理器 ----
 
     @Bean
     public SubagentManager subagentManager(ToolRegistry toolRegistry, AgentLLMProvider llmProvider,
@@ -196,9 +202,9 @@ public class AppConfig {
     }
 
     /**
-     * 注册 spawn 工具到 LocalMcpServer。
-     * 使用 @DependsOn 确保 LocalMcpServer、ToolRegistry、SubagentManager 都已创建。
-     * 这打破了 localMcpServer ↔ subagentManager 的循环依赖。
+     * 注册 spawn 工具到本地 MCP 服务。
+     * 使用 @DependsOn 确保本地 MCP 服务、工具注册表、子 Agent 管理器都已创建。
+     * 这打破了本地 MCP 服务 ↔ 子 Agent 管理器的循环依赖。
      */
     @Bean
     @DependsOn({"localMcpServer", "toolRegistry", "subagentManager"})
@@ -217,7 +223,7 @@ public class AppConfig {
         return new SkillsLoader(java.nio.file.Path.of(config.agent().workspace()), objectMapper);
     }
 
-    // ---- 1.7 ContextBuilder ----
+    // ---- 1.7 上下文构建器 ----
 
     @Bean
     public ContextBuilder contextBuilder(JarvisConfig config, ToolRegistry toolRegistry,
@@ -225,7 +231,7 @@ public class AppConfig {
         return new ContextBuilder(config.agent(), toolRegistry, memoryClient, skillsLoader);
     }
 
-    // ---- 1.8 AgentLoop ----
+    // ---- 1.8 Agent 循环 ----
 
     @Bean
     public AgentLoop agentLoop(JarvisConfig config, AgentLLMProvider llmProvider,
@@ -238,22 +244,22 @@ public class AppConfig {
                 sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver);
     }
 
-    // ---- 2.6 MessageBus 解耦 ----
+    // ---- 2.6 消息总线解耦 ----
 
     @Bean
     public MessageBus messageBus() {
         return new MessageBus();
     }
-    //这里会自动注入存入IoC容器的MessageBus
+    // 这里会自动注入 IoC 容器中的消息总线。
     @Bean
     public AgentMessageWorker agentMessageWorker(MessageBus messageBus, AgentLoop agentLoop,
                                                  ChannelManager channelManager) {
         var worker = new AgentMessageWorker(messageBus, agentLoop, channelManager);
-        worker.start();  //直接启动loop，不断去消息队列中取任务
+        worker.start();  // 直接启动循环，不断从消息队列中取任务。
         return worker;
     }
 
-    // ---- 2.7 Channel 抽象 ----
+    // ---- 2.7 通道抽象 ----
 
     @Bean
     public SseEventHub sseEventHub() {

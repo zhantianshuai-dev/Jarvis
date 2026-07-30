@@ -127,7 +127,7 @@ public class GitTool implements McpTool {
 
         List<String> command;
         try {
-            //这里直接判断是否是写入到动作add commit branch
+            // 这里直接判断是否属于 add、commit、branch 等写入动作。
             if (isWriteAction(action)) {
                 return executeWriteAction(action, arguments, gitWorkspace, cwd);
             }
@@ -263,7 +263,7 @@ public class GitTool implements McpTool {
             payload.put("error", "没有 staged changes，拒绝创建空提交");
             return toJson(payload);
         }
-        //正式定义提交command
+        // 正式定义提交命令。
         var commit = List.of("git", "commit", "-m", message);
         commands.add(commit);
         results.add(runGit(commit, cwd));
@@ -499,7 +499,7 @@ public class GitTool implements McpTool {
         }
     }
 
-    //该path是LLM输出的
+    // 该路径由 LLM 输出。
     private Path workspaceRoot(ToolContext ctx) {
         if (ctx == null || ctx.effectiveWorkspaceDir() == null || ctx.effectiveWorkspaceDir().isBlank()) {
             return defaultGitWorkspace;
@@ -537,7 +537,7 @@ public class GitTool implements McpTool {
                 return new GitResult(-1, output.toString(), true);
             }
             reader.join(Duration.ofSeconds(1).toMillis());
-            //正常返回Git运行后的结果
+            // 正常返回 Git 运行后的结果。
             return new GitResult(process.exitValue(), output.toString(), false);
         } catch (Exception e) {
             return new GitResult(-1, "Git 命令执行异常: " + e.getMessage(), false);
@@ -616,7 +616,7 @@ public class GitTool implements McpTool {
         return fallback;
     }
 
-    //这里定义了gitresult格式
+    // 这里定义 Git 结果格式。
     private record GitResult(int exitCode, String output, boolean timedOut) {}
 
 }

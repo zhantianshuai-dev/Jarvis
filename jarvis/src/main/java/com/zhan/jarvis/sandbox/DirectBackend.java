@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 宿主机直接执行后端。
- * 这是最小实现，不提供容器级隔离，但统一限制所有文件操作在 workspace 内。
+ * 这是最小实现，不提供容器级隔离，但统一限制所有文件操作在工作区内。
  */
 public class DirectBackend implements SandboxBackend {
 

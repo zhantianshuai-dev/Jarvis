@@ -3,7 +3,7 @@ package com.zhan.jarvis.auth;
 /**
  * AuthRouter 使用的请求/响应 DTO。
  * <p>
- * 这里集中声明 record，避免为每个很薄的 HTTP body 单独建文件。
+ * 这里集中声明 record，避免为每个很薄的 HTTP 请求体单独建文件。
  */
 public final class AuthModels {
 
@@ -37,7 +37,7 @@ public final class AuthModels {
             boolean enabled,
             String lastLoginAt
     ) {
-        /** 返回给前端的用户视图，不包含 passwordHash 等敏感字段。 */
+        /** 返回给前端的用户视图，不包含密码哈希等敏感字段。 */
         public static UserInfo from(AgentUser user) {
             return new UserInfo(
                     user.id(),
@@ -51,10 +51,10 @@ public final class AuthModels {
     }
 
     public record LoginResponse(
-            /** 前端后续放到 Authorization: Bearer 中的 token。 */
+            /** 前端后续放到 Authorization: Bearer 中的令牌。 */
             String accessToken,
             String tokenType,
-            /** token 有效期，单位秒。 */
+            /** 令牌有效期，单位秒。 */
             long expiresIn,
             long userId,
             String username,

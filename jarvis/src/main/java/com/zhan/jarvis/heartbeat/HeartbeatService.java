@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Heartbeat 自主唤醒服务。
- * 定时读取 workspace 下的 HEARTBEAT.md，把其中的任务投递给 Agent。
+ * 定时读取工作区下的 HEARTBEAT.md，把其中的任务投递给 Agent。
  */
 public class HeartbeatService {
 

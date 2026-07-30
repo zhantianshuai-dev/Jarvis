@@ -6,7 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 累加一次 AgentLoop 中多轮 LLM 请求的 token usage。
+ * 累加一次 AgentLoop 中多轮 LLM 请求的 token 使用量。
  */
 public class TokenUsageAccumulator {
 
@@ -14,6 +14,18 @@ public class TokenUsageAccumulator {
     private int completionTokens;
     private int totalTokens;
     private int contextTokens;
+
+    public static TokenUsageAccumulator fromMap(Map<String, Object> source) {
+        var accumulator = new TokenUsageAccumulator();
+        if (source == null || source.isEmpty()) {
+            return accumulator;
+        }
+        accumulator.promptTokens = intValue(source.get("prompt_tokens"));
+        accumulator.completionTokens = intValue(source.get("completion_tokens"));
+        accumulator.totalTokens = intValue(source.get("total_tokens"));
+        accumulator.contextTokens = intValue(source.get("context_tokens"));
+        return accumulator;
+    }
 
     public void add(ChatResponse.TokenUsage usage) {
         if (usage == null) {
@@ -33,5 +45,19 @@ public class TokenUsageAccumulator {
         map.put("total_tokens", totalTokens);
         map.put("context_tokens", contextTokens);
         return map;
+    }
+
+    private static int intValue(Object value) {
+        if (value instanceof Number n) {
+            return Math.max(0, n.intValue());
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value)));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 }

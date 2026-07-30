@@ -73,7 +73,7 @@ public class MemoryServiceClient {
         addMessage(sessionId, role, text, Map.of());
     }
 
-    /** 追加消息到会话，支持附加 metadata 写入 memory-service JSONL。 */
+    /** 追加消息到会话，支持附加元数据写入 memory-service JSONL。 */
     public void addMessage(String sessionId, String role, String text, Map<String, Object> metadata) {
         var body = new java.util.LinkedHashMap<String, Object>();
         body.put("session_id", sessionId);

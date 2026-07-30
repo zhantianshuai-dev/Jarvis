@@ -19,10 +19,10 @@ import java.util.*;
  *   1. 向量化查询
  *   2. 全局向量检索 — 定位入口目录 (level == 0)
  *   3. 合并起始点 — 全局命中目录 + 根目录
- *   4. 优先队列 BFS 递归检索 + 分数传播
+ *   4. 优先队列广度优先递归检索 + 分数传播
  *   5. 收敛检查 — 连续 N 轮 topK 不变则退出
- *   6. Rerank 重排序（可选）
- *   7. Hotness 冷热度混合
+ *   6. 重排序（可选）
+ *   7. 冷热度混合
  * </pre>
  */
 public class HierarchicalRetriever {
@@ -64,14 +64,14 @@ public class HierarchicalRetriever {
         String query = typedQuery.query();
         log.info("层级检索: query={}, type={}, limit={}", query, typedQuery.contextType(), limit);
 
-        // Step 1: 向量化
+        // 步骤 1：向量化
         float[] queryVector = embedder.embed(query);
 
-        // Step 2: 全局向量检索 — 找入口目录 (level == 0)
+        // 步骤 2：全局向量检索 — 找入口目录（level == 0）
         var globalHits = globalVectorSearch(queryVector, typedQuery.contextType(), limit);
         log.info("全局检索: {} 个入口目录", globalHits.size());
 
-        // Step 3: 合并起始点 — 全局检索结果全部进候选池 + 目录队列
+        // 步骤 3：合并起始点 — 全局检索结果全部进候选池 + 目录队列
         var candidates = new LinkedHashMap<String, Candidate>();
         var dirQueue = new PriorityQueue<DirEntry>();
         var startingSeen = new HashSet<String>();
@@ -94,20 +94,20 @@ public class HierarchicalRetriever {
 
         log.info("起始目录: {} 个, 初始候选: {} 个", dirQueue.size(), candidates.size());
 
-        // Step 4: BFS 递归检索
+        // 步骤 4：广度优先递归检索
         int searchLimit = Math.max(limit * 2, 20);
         recursiveSearch(queryVector, dirQueue, candidates, searchLimit, limit, typedQuery.contextType());
 
         var ranked = new ArrayList<>(candidates.values());
         ranked.sort(Comparator.comparingDouble(Candidate::score).reversed());
 
-        // Step 5: Rerank
+        // 步骤 5：重排序
         if (reranker != null && reranker.isAvailable() && !ranked.isEmpty()) {
             rerankCandidates(query, ranked);
             ranked.sort(Comparator.comparingDouble(Candidate::rerankOrVectorScore).reversed());
         }
 
-        // Step 6: Hotness 混合 → MatchedContext
+        // 步骤 6：冷热度混合 → 命中上下文
         var matched = convertToMatchedContexts(ranked);
         var finalResults = matched.size() > limit ? matched.subList(0, limit) : matched;
 
@@ -174,7 +174,7 @@ public class HierarchicalRetriever {
             double currentScore = dir.score;
             for (var child : children) {
                 double childScore = Double.isFinite(child.score()) ? child.score() : 0.0;
-                // 分数传播: finalScore = alpha * childScore + (1-alpha) * parentScore
+                // 分数传播：finalScore = alpha * childScore + (1-alpha) * parentScore
                 double finalScore = currentScore > 0
                         ? scorePropagationAlpha * childScore + (1 - scorePropagationAlpha) * currentScore
                         : childScore;
@@ -222,7 +222,7 @@ public class HierarchicalRetriever {
         }
     }
 
-    // ---- Rerank ----
+    // ---- 重排序 ----
 
     private void rerankCandidates(String query, List<Candidate> candidates) {
         var ids = candidates.stream().map(c -> c.hit.contentId()).toList();
@@ -256,7 +256,7 @@ public class HierarchicalRetriever {
         }
     }
 
-    // ---- Hotness + 结果转换 ----
+    // ---- 冷热度 + 结果转换 ----
 
     private List<MatchedContext> convertToMatchedContexts(List<Candidate> candidates) {
         var ids = candidates.stream().map(c -> c.hit.contentId()).toList();
@@ -305,7 +305,7 @@ public class HierarchicalRetriever {
     static class Candidate {
         final VectorStore.SearchHit hit;
         double score;        // 向量语义分数（含父目录传播）
-        Double rerankScore;  // rerank 分数（可选）
+        Double rerankScore;  // 重排序分数（可选）
 
         Candidate(VectorStore.SearchHit hit, double score) {
             this.hit = hit;

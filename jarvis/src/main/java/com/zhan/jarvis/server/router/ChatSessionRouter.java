@@ -3,6 +3,8 @@ package com.zhan.jarvis.server.router;
 import cn.hutool.core.util.IdUtil;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.memory.MemoryServiceClient;
+import com.zhan.jarvis.session.ChatDisplayMessageFilter;
+import com.zhan.jarvis.session.SessionFileSpaceManager;
 import com.zhan.jarvis.session.SessionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,9 +36,12 @@ public class ChatSessionRouter {
     private static final Logger log = LoggerFactory.getLogger(ChatSessionRouter.class);
 
     private final SessionManager sessionManager;
+    private final SessionFileSpaceManager fileSpaceManager;
+    private final ChatDisplayMessageFilter displayMessageFilter = new ChatDisplayMessageFilter();
 
-    public ChatSessionRouter(SessionManager sessionManager) {
+    public ChatSessionRouter(SessionManager sessionManager, SessionFileSpaceManager fileSpaceManager) {
         this.sessionManager = sessionManager;
+        this.fileSpaceManager = fileSpaceManager;
     }
 
     @Bean
@@ -61,9 +66,11 @@ public class ChatSessionRouter {
         return Mono.fromCallable(() -> {
                     String sessionId = "web_" + userId + "_" + IdUtil.fastSimpleUUID();
                     sessionManager.getOrCreate(sessionId, userId);
+                    var fileSpace = fileSpaceManager.ensure(sessionId);
                     return Map.of(
                             "session_id", sessionId,
-                            "title", "新的对话"
+                            "title", "新的对话",
+                            "file_space", fileSpace.toMap()
                     );
                 })
                 .subscribeOn(Schedulers.boundedElastic())
@@ -93,18 +100,26 @@ public class ChatSessionRouter {
     private Mono<ServerResponse> handleDelete(ServerRequest req) {
         String userId = currentUserId(req);
         String sessionId = req.pathVariable("sessionId");
+        boolean cleanFiles = req.queryParam("clean_files")
+                .map(Boolean::parseBoolean)
+                .orElse(false);
         log.info("收到删除会话请求: sessionId={}, userId={}, remote={}",
                 sessionId, userId, req.remoteAddress().map(Object::toString).orElse("unknown"));
-        return Mono.fromCallable(() -> sessionManager.deleteSession(sessionId, userId))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(deleted -> {
-                    log.info("删除会话请求完成: sessionId={}, userId={}, deleted={}",
-                            sessionId, userId, deleted);
-                    return ServerResponse.ok().bodyValue(Map.of(
+        return Mono.fromCallable(() -> {
+                    boolean deleted = sessionManager.deleteSession(sessionId, userId);
+                    boolean filesDeleted = cleanFiles && fileSpaceManager.delete(sessionId);
+                    return Map.of(
                             "sessionId", sessionId,
                             "deleted", deleted,
+                            "filesDeleted", filesDeleted,
                             "success", true
-                    ));
+                    );
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(body -> {
+                    log.info("删除会话请求完成: sessionId={}, userId={}, deleted={}, filesDeleted={}",
+                            sessionId, userId, body.get("deleted"), body.get("filesDeleted"));
+                    return ServerResponse.ok().bodyValue(body);
                 })
                 .onErrorResume(WebClientResponseException.NotFound.class, e ->
                         ServerResponse.status(HttpStatus.NOT_FOUND)
@@ -121,6 +136,7 @@ public class ChatSessionRouter {
         item.put("messageCount", summary.messageCount());
         item.put("createdAt", summary.createdAt());
         item.put("updatedAt", summary.updatedAt());
+        item.put("fileSpace", fileSpaceManager.ensure(summary.sessionId()).toMap());
         return item;
     }
 
@@ -128,19 +144,12 @@ public class ChatSessionRouter {
         var body = new LinkedHashMap<String, Object>();
         body.put("sessionId", sessionMessages.sessionId());
         body.put("title", sessionMessages.title());
+        body.put("fileSpace", fileSpaceManager.ensure(sessionMessages.sessionId()).toMap());
         body.put("messages", sessionMessages.messages().stream()
-                .filter(this::visibleMessage)
+                .filter(displayMessageFilter::visible)
                 .map(this::messageView)
                 .toList());
         return body;
-    }
-
-    private boolean visibleMessage(MemoryServiceClient.SessionMessage message) {
-        if ("user".equals(message.role())) return true;
-        if (!"assistant".equals(message.role())) return false;
-        if (message.content() == null || message.content().isBlank()) return false;
-        Object finalFlag = message.metadata().get("final");
-        return finalFlag == null || Boolean.parseBoolean(String.valueOf(finalFlag));
     }
 
     private Map<String, Object> messageView(MemoryServiceClient.SessionMessage message) {

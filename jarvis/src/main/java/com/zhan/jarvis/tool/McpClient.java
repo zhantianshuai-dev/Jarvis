@@ -6,17 +6,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MCP Client — 连接外部 MCP Server。
+ * MCP 客户端 — 连接外部 MCP 服务。
  * <p>
  * 阶段 2 实现具体传输层（StdioTransport、SseTransport）。
- * 当前为桩，允许 ToolRegistry 编译通过。
+ * 当前为占位实现，允许工具注册表编译通过。
  */
 public interface McpClient {
 
     /** 是否已连接且可用 */
     boolean isAvailable();
 
-    /** 获取该 MCP Server 提供的所有工具定义 */
+    /** 获取该 MCP 服务提供的所有工具定义。 */
     List<ToolDefinition> listTools();
 
     /** 调用工具 */

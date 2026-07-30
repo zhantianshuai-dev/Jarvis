@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Cron 定时任务服务。
- * 对齐 Jarvis：使用持久化 CronStore，计算 nextRunAtMs，并按最近任务时间唤醒。
+ * 对齐 Jarvis：使用持久化定时任务存储，计算 nextRunAtMs，并按最近任务时间唤醒。
  */
 public class CronService {
 

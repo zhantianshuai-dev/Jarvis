@@ -9,6 +9,7 @@ import com.zhan.jarvis.agent.loop.LoopObserver;
 import com.zhan.jarvis.agent.loop.LoopOutcome;
 import com.zhan.jarvis.agent.loop.LoopState;
 import com.zhan.jarvis.agent.loop.PendingConfirmation;
+import com.zhan.jarvis.agent.loop.RuntimeContextBudgeter;
 import com.zhan.jarvis.agent.loop.SseLoopObserver;
 import com.zhan.jarvis.agent.loop.ToolCallBuilder;
 import com.zhan.jarvis.agent.loop.ToolResult;
@@ -43,10 +44,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Agent 核心循环 — LLM ↔ Tool 往返直到任务完成或达到最大迭代次数。
+ * Agent 核心循环 — LLM 与工具往返直到任务完成或达到最大迭代次数。
  */
 public class AgentLoop {
 
@@ -65,6 +67,7 @@ public class AgentLoop {
     private final AgentCheckpointStore checkpointStore;
     private final WorkspaceResolver workspaceResolver;
     private final ToolPayloadSanitizer toolPayloadSanitizer;
+    private final RuntimeContextBudgeter runtimeContextBudgeter;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -103,6 +106,7 @@ public class AgentLoop {
         this.checkpointStore = checkpointStore;
         this.workspaceResolver = workspaceResolver;
         this.toolPayloadSanitizer = new ToolPayloadSanitizer(objectMapper);
+        this.runtimeContextBudgeter = new RuntimeContextBudgeter();
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -120,7 +124,7 @@ public class AgentLoop {
 
     /**
      * 人工确认工具执行后恢复原中断点。
-     * 如果 checkpoint 已过期，则退回到一条 continuation message，保证用户能看到工具执行结果。
+     * 如果检查点已过期，则退回到一条继续执行消息，保证用户能看到工具执行结果。
      */
     public String continueAfterToolConfirmation(PendingToolPermission pending, String toolResult,
                                                 String confirmedBy) {
@@ -133,6 +137,8 @@ public class AgentLoop {
         var confirmedMetadata = new LinkedHashMap<String, Object>();
         confirmedMetadata.put("source", "Jarvis");
         confirmedMetadata.put("trace", true);
+        confirmedMetadata.put("hidden", true);
+        confirmedMetadata.put("display_event", false);
         confirmedMetadata.put("trace_type", "confirmed_tool_result");
         confirmedMetadata.put("confirm_id", pending.confirmId());
         confirmedMetadata.put("tool_name", pending.toolName());
@@ -198,7 +204,9 @@ public class AgentLoop {
         var messages = contextBuilder.build(session, userMessage, 20, runMode, workspace);
         sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
                 "source", "Jarvis",
-                "user_id", userId != null ? userId : ""
+                "user_id", userId != null ? userId : "",
+                "display_event", true,
+                "event_type", "user_message"
         ));
 
         return runLoop(newState(sessionKey, sessionId, userId,
@@ -238,7 +246,9 @@ public class AgentLoop {
             sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
                     "source", "Jarvis",
                     "user_id", userId != null ? userId : "",
-                    "stream", true
+                    "stream", true,
+                    "display_event", true,
+                    "event_type", "user_message"
             ));
 
             runLoop(newState(sessionKey, sessionId, userId, withCurrentMessage(metadata, userMessage), messages, 0, true,
@@ -262,6 +272,7 @@ public class AgentLoop {
                         + "如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
         ));
         return runLoop(new LoopState(
+                checkpoint.runId(),
                 checkpoint.sessionKey(),
                 checkpoint.sessionId(),
                 userId,
@@ -269,10 +280,10 @@ public class AgentLoop {
                 messages,
                 checkpoint.iteration(),
                 false,
-                Map.of("resumed_from_checkpoint", true),
-                new TokenUsageAccumulator(),
-                RunMode.from(checkpoint.metadata() == null ? null : checkpoint.metadata().get("mode")),
-                new LinkedHashSet<>()
+                checkpoint.outputMetadata() == null ? Map.of("resumed_from_checkpoint", true) : checkpoint.outputMetadata(),
+                TokenUsageAccumulator.fromMap(checkpoint.tokenUsage()),
+                RunMode.from(checkpoint.runMode()),
+                new LinkedHashSet<>(checkpoint.activeDeferredTools() == null ? Set.of() : checkpoint.activeDeferredTools())
         ), LoopObserver.NOOP);
     }
 
@@ -293,6 +304,13 @@ public class AgentLoop {
                     latestUserMessage(state),
                     state.activeDeferredTools()
             );
+            var budget = runtimeContextBudgeter.apply(state.messages(), tools, agentConfig.contextBudget());
+            if (budget.changed()) {
+                log.info("[AgentLoop] 运行态上下文已压缩: beforeTokens={}, afterTokens={}, compressed={}, removed={}",
+                        budget.beforeTokens(), budget.afterTokens(), budget.compressedMessages(), budget.removedMessages());
+            } else {
+                log.debug("[AgentLoop] 运行态上下文预算: estimatedTokens={}", budget.afterTokens());
+            }
             ChatResponse response = state.stream()
                     ? streamChatResponse(state, tools, observer, iteration)
                     : llmProvider.chat(state.messages(), tools);
@@ -406,6 +424,8 @@ public class AgentLoop {
         var metadata = withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
+                "display_event", true,
+                "event_type", "confirmation_card",
                 "iteration", iteration,
                 "requires_confirmation", true
         )));
@@ -424,6 +444,8 @@ public class AgentLoop {
         sessionManager.addMessage(state.sessionId(), "assistant", reply, withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
+                "display_event", true,
+                "event_type", "assistant_message",
                 "iteration", iteration,
                 "finish_reason", finishReason
         ))));
@@ -442,6 +464,8 @@ public class AgentLoop {
         sessionManager.addMessage(state.sessionId(), "assistant", reply, withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
                 "final", true,
+                "display_event", true,
+                "event_type", "assistant_message",
                 "max_iterations_reached", true
         ))));
         triggerHook(HookManager.AGENT_POST_PROCESS, state.sessionId(), state.userId(), mergedMeta(state, Map.of(
@@ -476,8 +500,10 @@ public class AgentLoop {
         if (checkpointStore == null || !hasText(pending.confirmId())) {
             return;
         }
-        //存入concurrentHashMap，key：confirmId， value：AgentCheckpoint
+        // 存入内存 checkpoint；第一版按 confirmId 建索引，后续可按 runId/iteration 做恢复和回滚。
         checkpointStore.put(new AgentCheckpoint(
+                "checkpoint_" + UUID.randomUUID(),
+                state.runId(),
                 pending.confirmId(),
                 pending.result().toolCallId(),
                 state.sessionKey(),
@@ -486,6 +512,12 @@ public class AgentLoop {
                 List.copyOf(new ArrayList<>(state.messages())),
                 iteration,
                 Map.copyOf(state.metadata() == null ? Map.of() : state.metadata()),
+                Map.copyOf(state.outputMetadata() == null ? Map.of() : state.outputMetadata()),
+                state.tokenUsage().toMap(),
+                state.runMode().value(),
+                Set.copyOf(state.activeDeferredTools() == null ? Set.of() : state.activeDeferredTools()),
+                pendingConfirmationMetadata(pending),
+                Instant.now(),
                 pending.expiresAt()
         ));
     }
@@ -621,6 +653,7 @@ public class AgentLoop {
                                int startIteration, boolean stream, Map<String, Object> outputMetadata) {
         var safeMetadata = metadata == null ? Map.<String, Object>of() : metadata;
         return new LoopState(
+                "run_" + UUID.randomUUID(),
                 sessionKey,
                 sessionId,
                 userId,
@@ -633,6 +666,16 @@ public class AgentLoop {
                 RunMode.from(safeMetadata.get("mode")),
                 new LinkedHashSet<>()
         );
+    }
+
+    private Map<String, Object> pendingConfirmationMetadata(PendingConfirmation pending) {
+        var metadata = new LinkedHashMap<String, Object>();
+        metadata.put("confirm_id", pending.confirmId());
+        metadata.put("pending_tool_call_id", pending.result().toolCallId());
+        metadata.put("tool_name", pending.result().toolName());
+        metadata.put("reply", pending.reply());
+        metadata.put("expires_at", pending.expiresAt() != null ? pending.expiresAt().toString() : "");
+        return metadata;
     }
 
     private Map<String, Object> withCurrentMessage(Map<String, Object> metadata, String userMessage) {
@@ -665,6 +708,8 @@ public class AgentLoop {
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
+        metadata.put("hidden", true);
+        metadata.put("display_event", false);
         metadata.put("trace_type", "assistant_tool_calls");
         metadata.put("iteration", iteration);
         metadata.put("tool_calls", toolCalls.stream()
@@ -779,6 +824,8 @@ public class AgentLoop {
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
+        metadata.put("hidden", true);
+        metadata.put("display_event", false);
         metadata.put("trace_type", "tool_result");
         metadata.put("iteration", iteration);
         metadata.put("tool_call_id", result.toolCallId());
@@ -833,7 +880,7 @@ public class AgentLoop {
             try {
                 return Instant.parse(value);
             } catch (Exception ignored) {
-                // fallback below
+                // 下面执行兜底处理。
             }
         }
         return Instant.now().plus(Duration.ofMinutes(10));

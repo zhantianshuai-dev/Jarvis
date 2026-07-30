@@ -28,7 +28,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 飞书 Channel：使用官方 SDK WebSocket 长连接收消息，不依赖公网 webhook。
+ * 飞书通道：使用官方 SDK WebSocket 长连接接收消息，不依赖公网 webhook。
  */
 public class FeishuChannel implements Channel {
 
@@ -90,7 +90,7 @@ public class FeishuChannel implements Channel {
                     }
                 })
                 .build();
-        //初始化wsClient
+        // 初始化 WebSocket 客户端。
         this.wsClient = new com.lark.oapi.ws.Client.Builder(config.appId(), config.appSecret())
                 .eventHandler(dispatcher)
                 .autoReconnect(true)

@@ -53,7 +53,7 @@ public class AuthService {
                 .orElseThrow(() -> new AuthException("用户名或密码错误"));
         ensureNotLocked(user);
         if (!BCrypt.checkpw(password, user.passwordHash())) {
-            // 密码错误时记录失败次数，达到阈值后由 Repository 设置 locked_until。
+            // 密码错误时记录失败次数，达到阈值后由仓储设置 locked_until。
             users.recordLoginFailure(user.id(), maxFailedLogins, lockSeconds);
             throw new AuthException("用户名或密码错误");
         }
@@ -78,7 +78,7 @@ public class AuthService {
         String name = !isBlank(displayName) ? displayName.strip() : normalizedUsername;
         long userId = snowflake.nextId();
         var user = users.createUser(userId, normalizedUsername, password, name, "user");
-        // 注册成功后直接签发 token，让前端可以无缝进入聊天页。
+        // 注册成功后直接签发令牌，让前端可以无缝进入聊天页。
         String token = issueToken(user.id());
         return response(token, user);
     }
@@ -88,10 +88,10 @@ public class AuthService {
             throw NotLoginException.newInstance(NotLoginException.NOT_TOKEN, StpUtil.TYPE,
                     "未提供 token", null);
         }
-        // Sa-Token 根据 token 找回登录时绑定的 loginId。这里的 loginId 就是 agent_user.id。
+        // Sa-Token 根据令牌找回登录时绑定的 loginId。这里的 loginId 就是 agent_user.id。
         Object loginId = StpUtil.getLoginIdByToken(token);
         long userId = Long.parseLong(String.valueOf(loginId));
-        // token 有效不代表用户仍可用；每次鉴权都回表检查 enabled 状态。
+        // 令牌有效不代表用户仍可用；每次鉴权都回表检查启用状态。
         return users.findById(userId)
                 .filter(AgentUser::enabled)
                 .orElseThrow(() -> new AuthException("用户不存在或已禁用"));
@@ -105,7 +105,7 @@ public class AuthService {
         if (isBlank(token)) {
             return;
         }
-        // 按 token 精确登出，只让当前前端持有的 token 失效。
+        // 按令牌精确登出，只让当前前端持有的令牌失效。
         StpUtil.logoutByTokenValue(token);
     }
 
@@ -116,7 +116,7 @@ public class AuthService {
         }
         validatePassword(newPassword);
         users.updatePassword(user.id(), newPassword);
-        // 改密后注销当前 token，要求用户用新密码重新登录。
+        // 改密后注销当前令牌，要求用户用新密码重新登录。
         StpUtil.logoutByTokenValue(token);
     }
 
@@ -139,7 +139,7 @@ public class AuthService {
 
     private String issueToken(long userId) {
         // WebFlux 请求可能运行在 Reactor/异步线程中，StpUtil.login() 依赖上下文写回时
-        // 容易触发 SaTokenContext 未初始化；createLoginSession 直接创建登录态并返回 token。
+        // 容易触发 SaTokenContext 未初始化；createLoginSession 直接创建登录态并返回令牌。
         return StpUtil.createLoginSession(userId, SaLoginParameter.create().setTimeout(tokenTtlSeconds));
     }
 

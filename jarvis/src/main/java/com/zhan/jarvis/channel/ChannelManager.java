@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Channel 生命周期和 outbound 路由管理器。
+ * 通道生命周期和出站消息路由管理器。
  */
 public class ChannelManager {
 

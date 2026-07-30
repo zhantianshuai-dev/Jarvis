@@ -1,7 +1,7 @@
 package com.zhan.jarvis.hook;
 
 /**
- * 策略型 Hook 拒绝继续执行时抛出。
+ * 策略型钩子拒绝继续执行时抛出。
  */
 public class HookDecisionException extends RuntimeException {
 

@@ -65,12 +65,21 @@ public record JarvisConfig(
         int maxIterations,
         String workspace,
         WorkspaceOption[] workspaces,
+        ContextBudgetConfig contextBudget,
         String systemPromptTemplate
     ) {
         public record WorkspaceOption(
             String id,
             String label,
             String path
+        ) {}
+
+        public record ContextBudgetConfig(
+            boolean enabled,
+            int maxInputTokens,
+            int maxToolResultChars,
+            int maxContextBlockChars,
+            int keepRecentMessages
         ) {}
     }
 
@@ -103,7 +112,7 @@ public record JarvisConfig(
         ) {}
     }
 
-    /** Channel 配置 */
+    /** 通道配置 */
     public record ChannelConfig(
         FeishuConfig feishu
     ) {

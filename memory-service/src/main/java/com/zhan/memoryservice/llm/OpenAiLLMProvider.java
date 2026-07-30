@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * OpenAI 兼容的 LLM provider，支持 DeepSeek、百炼等。
+ * OpenAI 兼容的 LLM 服务提供商，支持 DeepSeek、百炼等。
  * <p>
  * 通过 WebClient 调 /v1/chat/completions，用 Jackson 解析响应。
  * 代理配置由 WebClientConfig 统一管理，Token 用量自动记录到 H2。

@@ -29,9 +29,9 @@ public class HotnessScorer {
         return score(activeCount, updatedAt, Instant.now());
     }
 
-    // 包级可见，允许注入 now 方便测试
+    // 包级可见，允许注入当前时间方便测试。
     double score(int activeCount, Instant updatedAt, Instant now) {
-        // 频率: sigmoid(log1p(activeCount))
+        // 频率：sigmoid(log1p(activeCount))
         double freq = 1.0 / (1.0 + Math.exp(-Math.log1p(activeCount)));
 
         // 时间衰减

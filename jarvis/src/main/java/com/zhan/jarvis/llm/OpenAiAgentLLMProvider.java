@@ -17,7 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * OpenAI 兼容的 Agent LLM Provider，支持 tool_calls 往返。
+ * OpenAI 兼容的 Agent LLM 服务提供商，支持工具调用往返。
  * <p>
  * WebClient.Builder 由 common 模块的 WebClientConfig 提供（含 HTTP/1.1 + 代理）。
  * ObjectMapper 由 Spring Boot WebFlux 自动配置（Jackson 3.x tools.jackson）。
@@ -184,6 +184,9 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                 });
     }
 
+    /*
+    这里才是真正发起请求的部分
+     */
     private Flux<ChatStreamDelta> streamOnce(LlmEndpoint endpoint, List<Message> messages, List<ToolDefinition> tools) {
         var body = buildRequestBody(endpoint, messages, tools, true);
         log.debug("LLM stream 请求: provider={}, {} 条消息, {} 个工具, 模型={}", endpoint.provider(), messages.size(),
@@ -222,7 +225,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
             body.putObject("stream_options").put("include_usage", true);
         }
 
-        // messages
+        // 对话消息
         var msgArray = body.putArray("messages");
         for (var msg : messages) {
             var msgNode = msgArray.addObject();
@@ -249,11 +252,11 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
             }
         }
 
-        // tools
+        // 工具定义
         if (tools != null && !tools.isEmpty()) {
             var toolsArray = body.putArray("tools");
             for (var td : tools) {
-                //转换为JOSN格式
+                // 转换为 JSON 格式。
                 toolsArray.addPOJO(td.toOpenAiFormat());
             }
         }
@@ -323,14 +326,14 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
 
         var messageNode = choice.path("message");
 
-        // content
+        // 文本内容
         String content = messageNode.path("content").asText();
 
-        // reasoning_content (thinking mode)
+        // 推理内容（thinking 模式）
         String reasoningContent = messageNode.has("reasoning_content")
                 ? messageNode.path("reasoning_content").asText() : null;
 
-        // tool calls
+        // 工具调用
         List<ToolCall> toolCalls = null;
         var tcNode = messageNode.path("tool_calls");
         if (tcNode.isArray() && !tcNode.isEmpty()) {
@@ -345,7 +348,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
 
         String finishReason = choice.path("finish_reason").asText("stop");
 
-        // usage
+        // token 使用量
         var usage = parseUsage(root.path("usage"));
 
         log.debug("LLM 响应: provider={}, finish={}, content长度={}, toolCalls={}, reasoning={}, tokens={}",

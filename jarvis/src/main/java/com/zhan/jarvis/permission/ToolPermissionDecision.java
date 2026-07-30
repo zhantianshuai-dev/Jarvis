@@ -4,7 +4,7 @@ import java.util.Map;
 
 /**
  * 工具权限决策。
- * allow 继续执行原工具；deny 阻断；ask 返回待人工确认的结构化 payload。
+ * 允许表示继续执行原工具；拒绝表示阻断；询问表示返回待人工确认的结构化载荷。
  */
 public record ToolPermissionDecision(
         Behavior behavior,

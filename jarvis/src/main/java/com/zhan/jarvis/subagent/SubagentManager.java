@@ -14,16 +14,17 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 子 Agent 管理器 — 对标 Python VikingBot SubagentManager。
+ * 子 Agent 管理器 — 对标 Python VikingBot 子 Agent 管理器。
  * <p>
  * 管理子 Agent 生命周期：创建、调度、结果收集。
- * 子 Agent 在 Virtual Thread 中运行，完成后结果存入内存。
+ * 子 Agent 在虚拟线程中运行，完成后结果存入内存。
  */
 public class SubagentManager {
 
@@ -71,7 +72,7 @@ public class SubagentManager {
     public SpawnHandle spawn(String task, String parentSessionId, SessionKey parentSessionKey, String parentUserId,
                              Map<String, Object> parentMetadata, boolean createWorktree, String worktreeName,
                              boolean persistChatStatusOnCompletion) {
-        //新建taskID
+        // 新建任务 ID。
         String taskId = UUID.randomUUID().toString();
         try {
             //创建任务
@@ -81,7 +82,7 @@ public class SubagentManager {
             return SpawnHandle.failed(taskId, "创建任务记录失败: " + e.getMessage());
         }
 
-        var metadata = new LinkedHashMap<String, Object>(parentMetadata == null ? Map.of() : parentMetadata);
+        var metadata = filteredSubagentMetadata(parentMetadata);
 
         String resolvedWorktreeName = safeValue(worktreeName);
         if (createWorktree && resolvedWorktreeName.isBlank()) {
@@ -91,7 +92,7 @@ public class SubagentManager {
         String worktreePath = "";
         if (!resolvedWorktreeName.isBlank()) {
             try {
-                //如果参数中createWorktree==true，就会为子agent创建一个独立的工作区
+                // 如果参数中 createWorktree==true，就会为子 Agent 创建一个独立的工作区。
                 if (createWorktree) {
                     var created = worktreeManager.create(resolvedWorktreeName, "HEAD", taskId);
                     if (!created.success()) {
@@ -128,7 +129,7 @@ public class SubagentManager {
         String boundWorktreeName = resolvedWorktreeName;
         String boundWorktreePath = worktreePath;
 
-        // Virtual Thread 后台执行
+        // 虚拟线程后台执行
         Thread.startVirtualThread(() -> {
             log.info("[SubagentManager] 启动子 Agent: taskId={}, task={}", taskId, task);
             SubagentResult result = subagent.run();
@@ -153,6 +154,37 @@ public class SubagentManager {
         });
 
         return SpawnHandle.started(taskId, resolvedWorktreeName, worktreePath);
+    }
+
+    static Map<String, Object> filteredSubagentMetadata(Map<String, Object> parentMetadata) {
+        var metadata = new LinkedHashMap<String, Object>();
+        copyIfPresent(parentMetadata, metadata, "workspace");
+        copyIfPresent(parentMetadata, metadata, "mode");
+        copyIfPresent(parentMetadata, metadata, "channel_type");
+        copyIfPresent(parentMetadata, metadata, "chat_id");
+        copyIfPresent(parentMetadata, metadata, "open_id");
+        copyIfPresent(parentMetadata, metadata, "feishu_open_id");
+        copyIfPresent(parentMetadata, metadata, "allowed_tool_groups");
+        metadata.put("subagent_isolated", true);
+        return metadata;
+    }
+
+    private static void copyIfPresent(Map<String, Object> source, Map<String, Object> target, String key) {
+        if (source == null || !source.containsKey(key)) {
+            return;
+        }
+        Object value = source.get(key);
+        if (value == null) {
+            return;
+        }
+        if (value instanceof String s && s.isBlank()) {
+            return;
+        }
+        if (value instanceof List<?> list) {
+            target.put(key, List.copyOf(list));
+            return;
+        }
+        target.put(key, value);
     }
 
     /** 获取子 Agent 结果 */
@@ -258,6 +290,8 @@ public class SubagentManager {
             memoryClient.addMessage(sessionId, "assistant", content, Map.of(
                     "source", "Jarvis",
                     "final", true,
+                    "display_event", true,
+                    "event_type", "subagent_status",
                     "subagent_status", true,
                     "task_id", taskId,
                     "task", task,

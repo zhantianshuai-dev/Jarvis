@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 百炼 Rerank 实现，兼容 DashScope compatible-api 的 /rerank 接口。
+ * 百炼重排序实现，兼容 DashScope compatible-api 的 /rerank 接口。
  * 响应格式与 Cohere /v2/rerank 一致（results 数组含 index + relevance_score）。
  */
 public class BailianRerankProvider implements RerankProvider {

@@ -7,11 +7,11 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 元数据存储接口 — 管理 content 条目的 CRUD 和查询。
+ * 元数据存储接口 — 管理内容条目的增删改查和查询。
  */
 public interface MetadataStore {
 
-    /** 保存新条目（不含 abstract/overview，由异步生成后更新） */
+    /** 保存新条目（不含摘要/概览，由异步生成后更新） */
     void save(ContextEntry entry);
 
     /** 更新摘要和概览（异步 LLM 生成后回调） */

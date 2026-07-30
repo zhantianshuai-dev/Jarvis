@@ -1,7 +1,7 @@
 package com.zhan.jarvis.channel;
 
 /**
- * 跨 Channel 的会话标识。
+ * 跨通道的会话标识。
  *
  * @param channelType 通道类型，如 http / cron / heartbeat
  * @param channelId 通道实例 ID

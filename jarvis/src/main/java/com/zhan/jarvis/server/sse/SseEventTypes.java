@@ -1,7 +1,7 @@
 package com.zhan.jarvis.server.sse;
 
 /**
- * SSE event names exposed by the HTTP streaming API.
+ * HTTP 流式接口对外暴露的 SSE 事件名称。
  */
 public final class SseEventTypes {
 
