@@ -144,7 +144,7 @@ public class MemoryServiceClient {
                 .bodyToMono(String.class)
                 .block();
         if (json == null || json.isBlank()) {
-            return new SessionMessages(sessionId, "", "新的对话", List.of());
+            return new SessionMessages(sessionId, "", "新的对话", Map.of(), List.of());
         }
 
         try {
@@ -164,10 +164,11 @@ public class MemoryServiceClient {
                     text(node, "session_id", sessionId),
                     text(node, "owner_user_id"),
                     text(node, "title", "新的对话"),
+                    readObjectMap(node, "tool_confirmations"),
                     messages);
         } catch (Exception e) {
             log.warn("解析 session messages 失败: {}", e.getMessage());
-            return new SessionMessages(sessionId, "", "新的对话", List.of());
+            return new SessionMessages(sessionId, "", "新的对话", Map.of(), List.of());
         }
     }
 
@@ -247,9 +248,16 @@ public class MemoryServiceClient {
         if (!node.has("metadata") || !node.get("metadata").isObject()) {
             return Map.of();
         }
+        return readObjectMap(node, "metadata");
+    }
+
+    private Map<String, Object> readObjectMap(JsonNode node, String field) {
+        if (!node.has(field) || !node.get(field).isObject()) {
+            return Map.of();
+        }
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> metadata = objectMapper.treeToValue(node.get("metadata"), Map.class);
+            Map<String, Object> metadata = objectMapper.treeToValue(node.get(field), Map.class);
             return metadata != null ? metadata : Map.of();
         } catch (Exception e) {
             return Map.of();
@@ -282,6 +290,7 @@ public class MemoryServiceClient {
             String sessionId,
             String ownerUserId,
             String title,
+            Map<String, Object> toolConfirmations,
             List<SessionMessage> messages
     ) {}
 

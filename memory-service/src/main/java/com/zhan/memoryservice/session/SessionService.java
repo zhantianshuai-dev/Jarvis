@@ -199,11 +199,38 @@ public class SessionService {
         result.put("session_id", sessionId);
         result.put("owner_user_id", session.ownerUserId() != null ? session.ownerUserId() : "");
         result.put("title", session.title() != null && !session.title().isBlank() ? session.title() : "新的对话");
+        result.put("tool_confirmations", toolConfirmationsView(source));
         result.put("messages", source.stream()
                 .filter(visibilityFilter::visibleForDisplay)
                 .map(this::messageView)
                 .toList());
         return result;
+    }
+
+    private Map<String, Object> toolConfirmationsView(List<Message> messages) {
+        var states = new LinkedHashMap<String, Object>();
+        for (var message : messages) {
+            Map<String, Object> metadata = message.metadata() != null ? message.metadata() : Map.of();
+            String confirmId = stringValue(metadata.get("confirm_id"));
+            if (confirmId.isBlank()) {
+                continue;
+            }
+            String traceType = stringValue(metadata.get("trace_type"));
+            boolean confirmed = "confirmed_tool_result".equals(traceType)
+                    || truthy(metadata.get("human_confirmed"))
+                    || !stringValue(metadata.get("confirmed_by")).isBlank();
+            if (!confirmed) {
+                continue;
+            }
+            var item = new LinkedHashMap<String, Object>();
+            item.put("confirmId", confirmId);
+            item.put("status", "confirmed");
+            item.put("tool", stringValue(metadata.get("tool_name")));
+            item.put("confirmedBy", stringValue(metadata.get("confirmed_by")));
+            item.put("createdAt", message.createdAt().toString());
+            states.put(confirmId, item);
+        }
+        return states;
     }
 
     public Map<String, Object> deleteSession(String sessionId, String ownerUserId) {
@@ -316,6 +343,14 @@ public class SessionService {
         }
         String normalized = text.strip().replaceAll("\\s+", " ");
         return normalized.length() <= 30 ? normalized : normalized.substring(0, 30) + "...";
+    }
+
+    private boolean truthy(Object value) {
+        return value != null && Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     // ---- 上下文组装 ----

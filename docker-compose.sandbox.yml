@@ -1,0 +1,17 @@
+services:
+  jarvis-sandbox:
+    build:
+      context: ./sandbox-service
+      dockerfile: Dockerfile
+    image: jarvis-sandbox:local
+    container_name: jarvis-sandbox
+    ports:
+      - "${SANDBOX_SERVICE_PORT:-8090}:8090"
+    environment:
+      SANDBOX_ROOT: /workspace
+      SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS:-60}
+      SANDBOX_MAX_OUTPUT_CHARS: ${SANDBOX_MAX_OUTPUT_CHARS:-100000}
+    working_dir: /workspace
+    volumes:
+      - "${JARVIS_SANDBOX_HOST_ROOT:-.}:/workspace"
+    network_mode: bridge

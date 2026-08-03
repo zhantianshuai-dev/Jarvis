@@ -385,6 +385,7 @@ public class ToolRegistry {
         String text = message == null ? "" : message.toLowerCase();
         groups.add("memory");
         groups.add("web");
+        groups.add("planner");
 
         if (mode == RunMode.SUPER_AGENT) {
             groups.addAll(List.of("file", "exec", "git", "cron", "feishu", "image", "subagent", "mcp"));
@@ -431,11 +432,15 @@ public class ToolRegistry {
             case "memory_search", "memory_remember", "memory_commit" -> "memory";
             case "web_fetch" -> "web";
             case "spawn" -> "subagent";
+            case "todo_update" -> "planner";
             default -> "general";
         };
     }
 
     private String schemaWeightFor(String name, String source) {
+        if ("todo_update".equals(name)) {
+            return "small";
+        }
         if ("external_mcp".equals(source) || Set.of("git", "imagegen", "cron", "feishu_history_messages").contains(name)) {
             return "large";
         }

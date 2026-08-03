@@ -52,11 +52,31 @@ public class SseLoopObserver implements LoopObserver {
 
     @Override
     public void onToolResult(LoopState state, int iteration, ToolResult result) {
+        if ("todo_update".equals(result.toolName())) {
+            emit(SseEventTypes.TODO_UPDATE, state.sessionId(), result.result(), "chat", Map.of(
+                    "iteration", iteration,
+                    "tool_call_id", result.toolCallId(),
+                    "tool_name", result.toolName()
+            ));
+        }
         emit(SseEventTypes.TOOL_RESULT, state.sessionId(), result.result(), "chat", Map.of(
                 "iteration", iteration,
                 "tool_call_id", result.toolCallId(),
                 "tool_name", result.toolName()
         ));
+    }
+
+    @Override
+    public void onPlanUpdate(LoopState state, Map<String, Object> planPayload, Map<String, Object> todoPayload) {
+        emit(SseEventTypes.PLAN_UPDATE, state.sessionId(), "", "planner",
+                planPayload == null ? Map.of() : planPayload);
+        if (todoPayload != null && !todoPayload.isEmpty()) {
+            emit(SseEventTypes.TODO_UPDATE, state.sessionId(), "", "planner", Map.of(
+                    "todo", todoPayload,
+                    "session_id", state.sessionId(),
+                    "run_id", state.runId()
+            ));
+        }
     }
 
     @Override

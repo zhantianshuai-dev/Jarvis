@@ -8,5 +8,6 @@ public record ChatRequest(
     String message,
     String userId,
     String mode,
-    String workspace
+    String workspace,
+    java.util.List<ChatAttachment> attachments
 ) {}

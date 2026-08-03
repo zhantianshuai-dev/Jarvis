@@ -34,7 +34,7 @@ public class SessionHistoryStage implements ContextStage {
                 if (request.runMode() == RunMode.CHAT && isTraceRole(stub.role())) {
                     continue;
                 }
-                state.messages().add(new Message(stub.role(), stub.content(), null, null, null));
+                state.messages().add(new Message(stub.role(), stub.content(), null, null, null, null));
             }
         } catch (Exception e) {
             log.debug("获取 Session Context 失败（非致命）: {}", e.getMessage());

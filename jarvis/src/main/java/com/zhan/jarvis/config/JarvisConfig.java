@@ -12,10 +12,13 @@ public record JarvisConfig(
     LLMConfig llm,
     MemoryServiceConfig memoryService,
     AgentConfig agent,
+    PlannerConfig planner,
     AuthConfig auth,
     McpConfig mcp,
     ChannelConfig channels,
     ImageGenConfig imageGen,
+    VisionConfig vision,
+    SandboxConfig sandbox,
     HeartbeatConfig heartbeat,
     CronConfig cron
 ) {
@@ -83,6 +86,14 @@ public record JarvisConfig(
         ) {}
     }
 
+    /** Agent 任务规划配置 */
+    public record PlannerConfig(
+        boolean enabled,
+        boolean superAgentAlwaysPlan,
+        int complexityThreshold,
+        int minMessageChars
+    ) {}
+
     /** HTTP API 认证配置 */
     public record AuthConfig(
         boolean enabled,
@@ -134,6 +145,23 @@ public record JarvisConfig(
         String apiKey,
         String model,
         String size
+    ) {}
+
+    /** 图片理解配置 */
+    public record VisionConfig(
+        boolean enabled,
+        String apiBase,
+        String apiKey,
+        String model,
+        int maxTokens
+    ) {}
+
+    /** 工具执行沙箱配置 */
+    public record SandboxConfig(
+        String backend,
+        String baseUrl,
+        String hostRoot,
+        String sandboxRoot
     ) {}
 
     /** Heartbeat 自主唤醒配置 */

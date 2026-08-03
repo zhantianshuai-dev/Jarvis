@@ -18,9 +18,17 @@ import com.zhan.jarvis.hook.impl.ToolAuditHook;
 import com.zhan.jarvis.llm.AgentLLMProvider;
 import com.zhan.jarvis.llm.OpenAiAgentLLMProvider;
 import com.zhan.jarvis.memory.MemoryServiceClient;
+import com.zhan.jarvis.agent.middleware.AgentMiddlewareChain;
+import com.zhan.jarvis.agent.middleware.RuntimeContextBudgetMiddleware;
+import com.zhan.jarvis.agent.planner.PlanManager;
+import com.zhan.jarvis.agent.planner.Planner;
+import com.zhan.jarvis.agent.event.JsonlRunEventStore;
+import com.zhan.jarvis.agent.event.RunEventStore;
+import com.zhan.jarvis.artifact.ArtifactManager;
 import com.zhan.jarvis.permission.ToolPermissionManager;
 import com.zhan.jarvis.permission.AgentCheckpointStore;
 import com.zhan.jarvis.sandbox.DirectBackend;
+import com.zhan.jarvis.sandbox.HttpSandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxManager;
 import com.zhan.jarvis.server.sse.SseEventHub;
@@ -29,6 +37,7 @@ import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.skill.SkillsLoader;
 import com.zhan.jarvis.subagent.SubagentManager;
 import com.zhan.jarvis.task.TaskManager;
+import com.zhan.jarvis.todo.TodoManager;
 import com.zhan.jarvis.tool.ExternalMcpClient;
 import com.zhan.jarvis.tool.LocalMcpServer;
 import com.zhan.jarvis.tool.McpClient;
@@ -37,6 +46,7 @@ import com.zhan.jarvis.tool.SseTransport;
 import com.zhan.jarvis.tool.StdioTransport;
 import com.zhan.jarvis.tool.ToolRegistry;
 import com.zhan.jarvis.tool.impl.*;
+import com.zhan.jarvis.vision.VisionClient;
 import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,8 +85,9 @@ public class AppConfig {
     @Bean
     public static AgentLLMProvider agentLLMProvider(JarvisConfig config, ObjectMapper objectMapper,
                                                      WebClient.Builder builder) {
-        log.info("创建 AgentLLMProvider: model={}", config.llm().model());
-        return new OpenAiAgentLLMProvider(config.llm(), objectMapper, builder);
+        var llmConfig = effectiveLlmConfig(config);
+        log.info("创建 AgentLLMProvider: model={}", llmConfig.model());
+        return new OpenAiAgentLLMProvider(llmConfig, objectMapper, builder);
     }
 
     // ---- 1.5 记忆服务客户端 ----
@@ -96,6 +107,12 @@ public class AppConfig {
         return new ImageGenClient(config.imageGen(), builder, objectMapper);
     }
 
+    @Bean
+    public static VisionClient visionClient(JarvisConfig config, WebClient.Builder builder,
+                                            ObjectMapper objectMapper) {
+        return new VisionClient(config.vision(), builder, objectMapper);
+    }
+
     // ---- 1.6 会话（委托 memory-service 管理） ----
 
     @Bean
@@ -106,6 +123,26 @@ public class AppConfig {
     @Bean
     public SessionManager sessionManager(MemoryServiceClient memoryClient, SessionFileSpaceManager fileSpaceManager) {
         return new SessionManager(memoryClient, fileSpaceManager);
+    }
+
+    @Bean
+    public ArtifactManager artifactManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
+        return new ArtifactManager(fileSpaceManager, objectMapper);
+    }
+
+    @Bean
+    public TodoManager todoManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
+        return new TodoManager(fileSpaceManager, objectMapper);
+    }
+
+    @Bean
+    public PlanManager planManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
+        return new PlanManager(fileSpaceManager, objectMapper);
+    }
+
+    @Bean
+    public Planner planner(JarvisConfig config, AgentLLMProvider llmProvider, ObjectMapper objectMapper) {
+        return new Planner(config.planner(), llmProvider, objectMapper);
     }
 
     // ---- 2.5 Hook 系统 ----
@@ -125,7 +162,21 @@ public class AppConfig {
     // ---- 2.8 沙箱抽象 ----
 
     @Bean
-    public SandboxBackend sandboxBackend() {
+    public SandboxBackend sandboxBackend(JarvisConfig config, WebClient.Builder builder) {
+        var sandbox = config.sandbox();
+        String backend = sandbox == null || sandbox.backend() == null ? "direct" : sandbox.backend().trim();
+        if ("http".equalsIgnoreCase(backend)) {
+            String hostRoot = sandbox.hostRoot() == null || sandbox.hostRoot().isBlank()
+                    ? config.agent().workspace()
+                    : sandbox.hostRoot();
+            String sandboxRoot = sandbox.sandboxRoot() == null || sandbox.sandboxRoot().isBlank()
+                    ? "/workspace"
+                    : sandbox.sandboxRoot();
+            log.info("创建 HTTP SandboxBackend: baseUrl={}, hostRoot={}, sandboxRoot={}",
+                    sandbox.baseUrl(), hostRoot, sandboxRoot);
+            return new HttpSandboxBackend(builder, sandbox.baseUrl(), hostRoot, sandboxRoot);
+        }
+        log.info("创建 Direct SandboxBackend");
         return new DirectBackend();
     }
 
@@ -155,7 +206,7 @@ public class AppConfig {
     public LocalMcpServer localMcpServer(ObjectMapper objectMapper, MemoryServiceClient memoryClient,
                                          ImageGenClient imageGenClient, SandboxManager sandboxManager,
                                          CronService cronService, WebClient.Builder builder,
-                                         JarvisConfig config) {
+                                         JarvisConfig config, TodoManager todoManager) {
         var server = new LocalMcpServer();
         // 基础工具（spawn 工具稍后通过派生工具初始化器注册，避免循环依赖）
         server.registerAll(
@@ -164,11 +215,12 @@ public class AppConfig {
                 new EditFileTool(objectMapper, sandboxManager),
                 new ListDirTool(objectMapper, sandboxManager),
                 new ExecTool(objectMapper, sandboxManager),
-                new GitTool(objectMapper, Path.of("").toAbsolutePath().normalize().toString()),
+                new GitTool(objectMapper, sandboxManager, Path.of("").toAbsolutePath().normalize().toString()),
                 new WebFetchTool(objectMapper, builder),
                 new MemorySearchTool(objectMapper, memoryClient),
                 new MemoryRememberTool(objectMapper, memoryClient),
                 new MemoryCommitTool(objectMapper, memoryClient),
+                new TodoUpdateTool(objectMapper, todoManager),
                 new CronTool(objectMapper, cronService),
                 new ImageGenTool(objectMapper, imageGenClient)
         );
@@ -234,14 +286,33 @@ public class AppConfig {
     // ---- 1.8 Agent 循环 ----
 
     @Bean
+    public AgentMiddlewareChain agentMiddlewareChain(JarvisConfig config) {
+        return new AgentMiddlewareChain(List.of(
+                new RuntimeContextBudgetMiddleware(config.agent().contextBudget())
+        ));
+    }
+
+    @Bean
+    public RunEventStore runEventStore(JarvisConfig config, ObjectMapper objectMapper) {
+        return new JsonlRunEventStore(Path.of(config.agent().workspace()), objectMapper);
+    }
+
+    @Bean
     public AgentLoop agentLoop(JarvisConfig config, AgentLLMProvider llmProvider,
                                 ToolRegistry toolRegistry, ContextBuilder contextBuilder,
                                 SessionManager sessionManager, ObjectMapper objectMapper,
                                 HookManager hookManager, AgentCheckpointStore checkpointStore,
-                                WorkspaceResolver workspaceResolver) {
+                                WorkspaceResolver workspaceResolver,
+                                AgentMiddlewareChain middlewareChain,
+                                RunEventStore runEventStore,
+                                ArtifactManager artifactManager,
+                                Planner planner,
+                                PlanManager planManager,
+                                TodoManager todoManager) {
         log.info("创建 AgentLoop: maxIterations={}", config.agent().maxIterations());
         return new AgentLoop(config.agent(), llmProvider, toolRegistry, contextBuilder,
-                sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver);
+                sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver, middlewareChain,
+                runEventStore, artifactManager, planner, planManager, todoManager);
     }
 
     // ---- 2.6 消息总线解耦 ----
@@ -338,5 +409,26 @@ public class AppConfig {
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private static JarvisConfig.LLMConfig effectiveLlmConfig(JarvisConfig config) {
+        var vision = config.vision();
+        if (vision == null || !vision.enabled()) {
+            return config.llm();
+        }
+        log.info("视觉开关已启用，主 Agent LLM 切换到视觉模型: model={}, apiBase={}",
+                vision.model(), vision.apiBase());
+        return new JarvisConfig.LLMConfig(
+                "bailian-vision",
+                vision.apiKey(),
+                vision.apiBase(),
+                vision.model(),
+                config.llm().temperature(),
+                config.llm().maxTokens(),
+                config.llm().logRequestBody(),
+                config.llm().retry(),
+                config.llm().circuitBreaker(),
+                config.llm().fallbackProviders()
+        );
     }
 }

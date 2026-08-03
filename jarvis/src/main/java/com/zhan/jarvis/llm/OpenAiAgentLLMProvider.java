@@ -230,7 +230,20 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         for (var msg : messages) {
             var msgNode = msgArray.addObject();
             msgNode.put("role", msg.role());
-            if (msg.content() != null) {
+            if (msg.contentParts() != null && !msg.contentParts().isEmpty()) {
+                var contentArray = msgNode.putArray("content");
+                for (var part : msg.contentParts()) {
+                    if ("image_url".equals(part.type())) {
+                        var imageNode = contentArray.addObject();
+                        imageNode.put("type", "image_url");
+                        imageNode.putObject("image_url").put("url", part.imageUrl());
+                    } else {
+                        contentArray.addObject()
+                                .put("type", "text")
+                                .put("text", part.text() != null ? part.text() : "");
+                    }
+                }
+            } else if (msg.content() != null) {
                 msgNode.put("content", msg.content());
             }
             if (msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {

@@ -9,6 +9,7 @@ Jarvis 是一个 Java 实现的个人 AI Agent 项目，提供 Web 聊天界面�
 - **MCP 扩展**：支持本地 `stdio` MCP Server，也支持外部 `sse` MCP Server。
 - **Memory Service**：通过 JSONL 持久化会话，支持会话压缩、Working Memory 和长期记忆提取。
 - **Token 治理**：支持运行模式路由、延迟工具暴露、大工具结果摘要和文件写入参数清洗，减少工具 Schema 与大文本内容对上下文窗口的占用。
+- **Sandbox 执行**：支持 `direct` 本机执行和 `http` 独立 sandbox-service 执行，文件与命令工具可切换到 Docker 挂载目录内运行。
 - **Web UI**：包含注册、登录、会话列表、聊天、工具确认、Worktree 管理等页面。
 - **权限与确认**：使用 Sa-Token 做接口认证，对高风险工具调用提供人工确认机制。
 - **Channel 接入**：支持 HTTP/Web 前端入口，也支持飞书机器人 WebSocket 长连接入口。
@@ -20,6 +21,7 @@ jarvis-web  ->  jarvis  ->  memory-service
    |             |              |
    |             |              +-- JSONL 会话 / 可选 PostgreSQL 向量存储
    |             +-- Agent Loop / Tools / MCP / Auth / Feishu / Cron
+   |             +-- sandbox-service（可选，HTTP 工具执行沙箱）
    +-- React + Vite
 ```
 
@@ -29,6 +31,7 @@ jarvis-web  ->  jarvis  ->  memory-service
 common/                  共享配置、Prompt、WebClient 等基础能力
 jarvis/                  Agent 主服务，端口默认 8082
 memory-service/          记忆与会话服务，端口默认 8081
+sandbox-service/          工具执行沙箱服务，端口默认 8090
 jarvis-web/              React Web 客户端
 workspace/skills/        可提交的技能描述文件
 ```
@@ -104,6 +107,35 @@ npm run dev
 | `MEMORY_SERVICE_POSTGRES_ENABLED` | 是否启用 PostgreSQL 存储和向量检索 |
 | `JARVIS_FEISHU_ENABLED` | 是否启用飞书 Channel |
 | `ZHIPU_API_KEY` | 智谱 Web Search MCP 示例密钥 |
+| `JARVIS_SANDBOX_BACKEND` | 工具执行后端，默认 `direct`，可设为 `http` |
+| `JARVIS_SANDBOX_HOST_ROOT` | 宿主机挂载给沙箱的根目录 |
+| `JARVIS_SANDBOX_BASE_URL` | sandbox-service 地址，默认 `http://localhost:8090` |
+
+## Sandbox 配置
+
+默认 `JARVIS_SANDBOX_BACKEND=direct`，文件工具和 `exec` 仍在 Jarvis 进程所在宿主机执行，但会做 workspace 路径校验。
+
+如需启用 Docker 沙箱，先打包并启动 sandbox-service：
+
+```bash
+./mvnw package -pl sandbox-service -DskipTests
+JARVIS_SANDBOX_HOST_ROOT=/Users/you/project docker compose -f docker-compose.sandbox.yml up -d --build
+```
+
+然后启动 Jarvis 时开启 HTTP 后端：
+
+```bash
+export JARVIS_SANDBOX_BACKEND=http
+export JARVIS_SANDBOX_HOST_ROOT=/Users/you/project
+export JARVIS_SANDBOX_BASE_URL=http://localhost:8090
+./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
+```
+
+路径映射规则：
+
+- 宿主机 `JARVIS_SANDBOX_HOST_ROOT` 会挂载到容器 `/workspace`。
+- Jarvis 会把用户选择的工作目录映射成容器内路径后发送给 sandbox-service。
+- sandbox-service 会再次校验所有文件路径必须位于 `/workspace` 下。
 
 ## MCP 配置示例
 
@@ -141,6 +173,7 @@ jarvis:
 ```bash
 ./mvnw compile
 ./mvnw test
+./mvnw package -pl sandbox-service -DskipTests
 ./mvnw spring-boot:run -pl memory-service -Dspring-boot.run.profiles=local
 ./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
 cd jarvis-web && npm run build
@@ -152,11 +185,12 @@ cd jarvis-web && npm run build
 - 如果密钥曾经推送到公开仓库，请立即在对应平台轮换密钥。
 - 对外开放服务前，请启用 `JARVIS_AUTH_ENABLED=true` 并限制 `JARVIS_AUTH_ALLOWED_ORIGINS`。
 - Shell、Git、MCP、飞书等工具具备真实执行能力，建议仅授予可信用户访问。
+- 启用 sandbox-service 时仍需谨慎挂载目录；沙箱只能限制挂载范围内的影响面，不能替代权限确认和密钥隔离。
 
 ## 后续计划
 
-- **沙箱执行环境**：计划加入独立 sandbox service，将 Shell、文件和 Git 等高风险工具放入受限执行环境中运行，通过目录挂载、资源限制和权限策略降低误操作影响范围。
 - **更细粒度权限**：将现有人工确认机制扩展为面向用户、工具组和工作空间的统一权限策略。
+- **沙箱资源限制**：继续补充 CPU、内存、网络和只读挂载等 Docker 运行限制。
 - **上下文成本优化**：继续完善工具结果预算、文件按范围读取和长期会话压缩策略。
 
 ## 贡献

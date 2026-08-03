@@ -6,6 +6,7 @@ import com.zhan.jarvis.memory.MemoryServiceClient;
 import com.zhan.jarvis.session.ChatDisplayMessageFilter;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import com.zhan.jarvis.session.SessionManager;
+import com.zhan.jarvis.todo.TodoManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -37,11 +38,14 @@ public class ChatSessionRouter {
 
     private final SessionManager sessionManager;
     private final SessionFileSpaceManager fileSpaceManager;
+    private final TodoManager todoManager;
     private final ChatDisplayMessageFilter displayMessageFilter = new ChatDisplayMessageFilter();
 
-    public ChatSessionRouter(SessionManager sessionManager, SessionFileSpaceManager fileSpaceManager) {
+    public ChatSessionRouter(SessionManager sessionManager, SessionFileSpaceManager fileSpaceManager,
+                             TodoManager todoManager) {
         this.sessionManager = sessionManager;
         this.fileSpaceManager = fileSpaceManager;
+        this.todoManager = todoManager;
     }
 
     @Bean
@@ -145,6 +149,13 @@ public class ChatSessionRouter {
         body.put("sessionId", sessionMessages.sessionId());
         body.put("title", sessionMessages.title());
         body.put("fileSpace", fileSpaceManager.ensure(sessionMessages.sessionId()).toMap());
+        body.put("tool_confirmations", sessionMessages.toolConfirmations() != null
+                ? sessionMessages.toolConfirmations()
+                : Map.of());
+        var todo = todoManager.load(sessionMessages.sessionId());
+        if (!todo.items().isEmpty()) {
+            body.put("current_todo", todoManager.payload(todo));
+        }
         body.put("messages", sessionMessages.messages().stream()
                 .filter(displayMessageFilter::visible)
                 .map(this::messageView)
@@ -174,4 +185,5 @@ public class ChatSessionRouter {
         Object username = req.exchange().getAttribute(AuthWebFilter.ATTR_USERNAME);
         return username != null ? String.valueOf(username) : "anonymous";
     }
+
 }

@@ -46,6 +46,12 @@ jarvis:
       max-context-block-chars: ${JARVIS_CONTEXT_MAX_CONTEXT_BLOCK_CHARS:4000}
       keep-recent-messages: ${JARVIS_CONTEXT_KEEP_RECENT_MESSAGES:12}
 
+  planner:
+    enabled: ${JARVIS_PLANNER_ENABLED:true}
+    super-agent-always-plan: ${JARVIS_PLANNER_SUPER_AGENT_ALWAYS_PLAN:true}
+    complexity-threshold: ${JARVIS_PLANNER_COMPLEXITY_THRESHOLD:5}
+    min-message-chars: ${JARVIS_PLANNER_MIN_MESSAGE_CHARS:12}
+
   auth:
     enabled: true
     registration-enabled: ${JARVIS_AUTH_REGISTRATION_ENABLED:true}
@@ -73,3 +79,16 @@ jarvis:
 
   image-gen:
     api-key: ${IMAGE_GEN_API_KEY:}
+
+  vision:
+    enabled: ${JARVIS_VISION_ENABLED:false}
+    api-base: ${JARVIS_VISION_API_BASE:https://dashscope.aliyuncs.com/compatible-mode}
+    api-key: ${JARVIS_VISION_API_KEY:${BAILIAN_API_KEY:}}
+    model: ${JARVIS_VISION_MODEL:qwen3-vl-flash}
+    max-tokens: ${JARVIS_VISION_MAX_TOKENS:1200}
+
+  sandbox:
+    backend: ${JARVIS_SANDBOX_BACKEND:direct}
+    base-url: ${JARVIS_SANDBOX_BASE_URL:http://localhost:8090}
+    host-root: ${JARVIS_SANDBOX_HOST_ROOT:${JARVIS_PROJECT_WORKSPACE:.}}
+    sandbox-root: ${JARVIS_SANDBOX_ROOT:/workspace}

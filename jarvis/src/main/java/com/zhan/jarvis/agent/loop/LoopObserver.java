@@ -29,6 +29,9 @@ public interface LoopObserver {
     default void onToolResult(LoopState state, int iteration, ToolResult result) {
     }
 
+    default void onPlanUpdate(LoopState state, Map<String, Object> planPayload, Map<String, Object> todoPayload) {
+    }
+
     default void onDone(LoopOutcome outcome) {
     }
 }

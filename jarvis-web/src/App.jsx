@@ -50,6 +50,7 @@ import {
   me,
   register,
   streamChat,
+  uploadChatAttachment,
 } from './api/auth.js';
 
 const TOKEN_KEY = 'jarvis.access_token';
@@ -160,11 +161,85 @@ function extractToolConfirmation(content, data = {}) {
     confirmId,
     tool: data.tool || content.match(/工具:\s*([^\n]+)/)?.[1]?.trim() || 'tool',
     action: data.action || content.match(/操作:\s*([^\n]+)/)?.[1]?.trim() || 'confirm',
-    summary: data.summary || content.match(/摘要:\s*([^\n]+)/)?.[1]?.trim() || '',
-    command: data.command || content.match(/命令:\s*([^\n]+)/)?.[1]?.trim() || '',
-    expiresAt: data.expires_at || content.match(/过期时间:\s*([^\n]+)/)?.[1]?.trim() || '',
     status: 'pending',
   };
+}
+
+function confirmationCopy(confirmation) {
+  const tool = String(confirmation.tool || '').toLowerCase();
+  const action = String(confirmation.action || '').toLowerCase();
+  if (tool === 'git' && action === 'push') {
+    return {
+      label: 'Git · 推送代码',
+      title: '确认推送代码？',
+      description: '将当前分支的提交推送到远程仓库。此操作会影响远程仓库中的代码。',
+    };
+  }
+  if (tool === 'git' && action === 'commit') {
+    return {
+      label: 'Git · 创建提交',
+      title: '确认创建提交？',
+      description: '将当前暂存的代码变更创建为新的 Git 提交。',
+    };
+  }
+  if (tool === 'file' && ['write', 'edit', 'delete'].includes(action)) {
+    return {
+      label: '文件操作',
+      title: '确认修改文件？',
+      description: '该操作会修改本地工作区中的文件内容。',
+    };
+  }
+  return {
+    label: '需要人工确认',
+    title: '确认执行此操作？',
+    description: '该操作可能影响你的工作区或外部服务，需要你确认后才能继续。',
+  };
+}
+
+function ToolConfirmationCard({ confirmation, chatBusy, onConfirm }) {
+  const copy = confirmationCopy(confirmation);
+  const isRunning = confirmation.status === 'running';
+  const isConfirmed = confirmation.status === 'confirmed';
+  return (
+    <section className={`tool-confirm-panel ${isConfirmed ? 'confirmed' : ''}`} aria-label="工具操作确认">
+      <div className="tool-confirm-head">
+        <span className="tool-confirm-icon">{isConfirmed ? <Check size={17} /> : <Lock size={17} />}</span>
+        <div>
+          <span className="tool-confirm-label">{isConfirmed ? '已确认' : copy.label}</span>
+          <h3>{isConfirmed ? '操作已执行' : copy.title}</h3>
+        </div>
+      </div>
+      <p className="tool-confirm-description">
+        {isConfirmed ? '已收到你的确认，正在继续处理任务。' : copy.description}
+      </p>
+      {confirmation.error && <div className="tool-confirm-error">{confirmation.error}</div>}
+      <button
+        className="tool-confirm-button"
+        type="button"
+        disabled={confirmation.status !== 'pending' || chatBusy}
+        onClick={onConfirm}
+      >
+        {isRunning ? '正在执行…' : isConfirmed ? '已执行' : '确认并执行'}
+      </button>
+    </section>
+  );
+}
+
+function MessageAttachmentList({ attachments = [] }) {
+  if (!attachments.length) {
+    return null;
+  }
+  return (
+    <div className="message-attachments">
+      {attachments.map((item) => (
+        <span className="message-attachment" key={item.id || item.name}>
+          <ImageIcon size={14} />
+          <span>{item.name || '图片'}</span>
+          {item.size ? <small>{formatFileSize(item.size)}</small> : null}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function formatConfirmResult(result) {
@@ -222,20 +297,55 @@ function selectedRunModeLabel(value) {
   return RUN_MODES.find((item) => item.value === value)?.label || 'Agent';
 }
 
-function normalizeChatMessages(items = []) {
+function formatFileSize(size = 0) {
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  }
+  if (size >= 1024) {
+    return `${Math.round(size / 1024)} KB`;
+  }
+  return `${size} B`;
+}
+
+function normalizeConfirmationStates(states = {}) {
+  if (!states || typeof states !== 'object') {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(states)
+      .filter(([confirmId]) => confirmId)
+      .map(([confirmId, value]) => [
+        confirmId,
+        {
+          confirmId,
+          status: value?.status || 'confirmed',
+          tool: value?.tool || '',
+          confirmedBy: value?.confirmedBy || value?.confirmed_by || '',
+          createdAt: value?.createdAt || value?.created_at || '',
+        },
+      ]),
+  );
+}
+
+function normalizeChatMessages(items = [], confirmationStates = {}) {
+  const states = normalizeConfirmationStates(confirmationStates);
   return items
     .filter((item) => item.role === 'user' || item.role === 'assistant')
     .map((item) => {
       if (item.role === 'assistant' && Boolean(item.subagent_status || item.subagentStatus)) {
         return normalizeStoredSubagentStatus(item);
       }
+      const confirmation = item.role === 'assistant' ? extractToolConfirmation(item.content || '', item) : null;
+      const confirmedState = confirmation?.confirmId ? states[confirmation.confirmId] : null;
       return {
         id: item.id || createClientId(),
         role: item.role,
         content: item.content || '',
         createdAt: item.createdAt,
         tokenUsage: item.role === 'assistant' ? normalizeContextUsage(item) : null,
-        confirmation: item.role === 'assistant' ? extractToolConfirmation(item.content || '', item) : null,
+        confirmation: confirmation && confirmedState
+          ? { ...confirmation, ...confirmedState, status: 'confirmed' }
+          : confirmation,
       };
     });
 }
@@ -275,6 +385,13 @@ function subagentStatusContent(status, task, result, error) {
     return `子 Agent 执行失败${task ? `：${task}` : ''}${error ? `\n\n${error}` : ''}`;
   }
   return `子 Agent 状态更新${task ? `：${task}` : ''}`;
+}
+
+function todoStatusLabel(status) {
+  if (status === 'in_progress') return '进行中';
+  if (status === 'completed') return '已完成';
+  if (status === 'failed') return '失败';
+  return '待处理';
 }
 
 function normalizeSubagentStatus(data = {}) {
@@ -323,6 +440,42 @@ function normalizeStoredSubagentStatus(item = {}) {
       created_at: item.createdAt,
     }),
     id: item.id || `subagent_${taskId || createClientId('subagent')}`,
+  };
+}
+
+function normalizeTodoUpdate(data = {}) {
+  let payload = data;
+  if (typeof data.content === 'string' && data.content.trim().startsWith('{')) {
+    try {
+      payload = JSON.parse(data.content);
+    } catch {
+      payload = data;
+    }
+  }
+  const todos = payload.todos || payload.todo || payload;
+  const items = Array.isArray(todos.items) ? todos.items : [];
+  if (!items.length) {
+    return null;
+  }
+  const sessionKey = todos.session_id || todos.sessionId || data.session_id || data.sessionId || '';
+  const runId = todos.run_id || todos.runId || '';
+  return {
+    id: `todo_${sessionKey}_${runId || 'current'}`,
+    role: 'assistant',
+    kind: 'todo_status',
+    content: '任务计划已更新',
+    createdAt: todos.updated_at || todos.updatedAt || data.created_at || new Date().toISOString(),
+    todo: {
+      sessionId: sessionKey,
+      runId,
+      updatedAt: todos.updated_at || todos.updatedAt || '',
+      items: items.map((item, index) => ({
+        id: item.id || `todo_item_${index}`,
+        content: item.content || '',
+        status: item.status || 'pending',
+        order: item.order ?? index + 1,
+      })).filter((item) => item.content),
+    },
   };
 }
 
@@ -387,6 +540,7 @@ export default function App() {
   const [deletingConversationId, setDeletingConversationId] = useState('');
   const [conversationPendingDelete, setConversationPendingDelete] = useState(null);
   const [draft, setDraft] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [chatError, setChatError] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
   const [runMode, setRunMode] = useState('agent');
@@ -404,6 +558,7 @@ export default function App() {
   const scrollRef = useRef(null);
   const runModeRef = useRef(null);
   const workspaceRef = useRef(null);
+  const attachmentInputRef = useRef(null);
   const selectedWorkspaceItem = useMemo(
     () => workspaces.find((item) => item.id === selectedWorkspace) || null,
     [selectedWorkspace, workspaces],
@@ -522,6 +677,13 @@ export default function App() {
         // 忽略无法解析的状态事件。
       }
     });
+    events.addEventListener('todo_update', (event) => {
+      try {
+        upsertTodoStatus(JSON.parse(event.data));
+      } catch {
+        // 忽略无法解析的 Todo 状态事件。
+      }
+    });
     return () => events.close();
   }, [authState, session?.token, sessionId]);
 
@@ -566,7 +728,12 @@ export default function App() {
     try {
       const result = await getChatSessionMessages(token, nextSessionId);
       setSessionId(result.sessionId || nextSessionId);
-      setMessages(normalizeChatMessages(result.messages));
+      const normalized = normalizeChatMessages(result.messages, result.tool_confirmations || result.toolConfirmations);
+      const currentTodo = normalizeTodoUpdate({
+        todo: result.current_todo || result.currentTodo,
+        session_id: result.sessionId || nextSessionId,
+      });
+      setMessages(currentTodo ? [...normalized, currentTodo] : normalized);
       return true;
     } catch (err) {
       setChatError(err.message || '加载历史会话失败');
@@ -646,17 +813,61 @@ export default function App() {
     }
   }
 
+  function handleAttachmentSelect(event) {
+    const files = Array.from(event.target.files || [])
+      .filter((file) => file.type.startsWith('image/'))
+      .map((file) => ({
+        id: createClientId('local_att'),
+        file,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      }));
+    if (files.length) {
+      setPendingAttachments((current) => [...current, ...files].slice(0, 4));
+    }
+    event.target.value = '';
+  }
+
+  function removePendingAttachment(id) {
+    setPendingAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
   async function handleSend(event) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || chatBusy) return;
+    const content = draft.trim() || (pendingAttachments.length ? '请分析这张图片。' : '');
+    if ((!content && pendingAttachments.length === 0) || chatBusy) return;
+    setChatBusy(true);
+    setChatError('');
 
     let activeSessionId = sessionId;
-    if (!activeSessionId) {
-      activeSessionId = await createAndOpenConversation(session.token);
+    let uploadedAttachments = [];
+    try {
+      if (!activeSessionId) {
+        activeSessionId = await createAndOpenConversation(session.token);
+      }
+      if (pendingAttachments.length) {
+        uploadedAttachments = await Promise.all(
+          pendingAttachments.map((item) => uploadChatAttachment(session.token, activeSessionId, item.file)),
+        );
+      }
+    } catch (err) {
+      setChatError(err.message || '附件上传失败');
+      setChatBusy(false);
+      return;
     }
 
-    const userMessage = { id: createClientId(), role: 'user', content };
+    const userMessage = {
+      id: createClientId(),
+      role: 'user',
+      content,
+      attachments: uploadedAttachments.map((item) => ({
+        id: item.id,
+        name: item.name,
+        contentType: item.contentType || item.content_type,
+        size: item.size,
+      })),
+    };
     const assistantId = createClientId();
     const assistantMessage = { id: assistantId, role: 'assistant', content: '' };
     setMessages((current) => [...current, userMessage, assistantMessage]);
@@ -674,14 +885,14 @@ export default function App() {
       ];
     });
     setDraft('');
-    setChatBusy(true);
-    setChatError('');
+    setPendingAttachments([]);
     try {
       await streamChat(session.token, {
         sessionId: activeSessionId,
         message: content,
         mode: runMode,
         workspace: selectedWorkspace,
+        attachments: uploadedAttachments,
         onToken: (token) => {
           if (!token) return;
           setMessages((current) =>
@@ -713,6 +924,9 @@ export default function App() {
           if (status) {
             upsertSubagentStatus(status);
           }
+        },
+        onTodoUpdate: (data) => {
+          upsertTodoStatus(data);
         },
         onProviderEvent: (type, data) => {
           const providerEvent = normalizeProviderEvent(type, data);
@@ -805,6 +1019,22 @@ export default function App() {
         message.kind === 'subagent_status' && message.subagent?.taskId === next.subagent.taskId
       );
       if (index < 0 || !next.subagent.taskId) {
+        return [...current, next];
+      }
+      return current.map((message, i) => (i === index ? { ...message, ...next } : message));
+    });
+  }
+
+  function upsertTodoStatus(data) {
+    const next = normalizeTodoUpdate(data);
+    if (!next) return;
+    setMessages((current) => {
+      const index = current.findIndex((message) =>
+        message.kind === 'todo_status'
+        && message.todo?.sessionId === next.todo.sessionId
+        && message.todo?.runId === next.todo.runId
+      );
+      if (index < 0) {
         return [...current, next];
       }
       return current.map((message, i) => (i === index ? { ...message, ...next } : message));
@@ -1212,7 +1442,22 @@ export default function App() {
                   </div>
                   <div className="message-body">
                     {message.role === 'assistant' ? (
-                      message.kind === 'subagent_status' ? (
+                      message.kind === 'todo_status' ? (
+                        <div className="todo-status-card">
+                          <div className="todo-status-title">任务计划</div>
+                          <div className="todo-status-list">
+                            {(message.todo?.items || []).map((item) => (
+                              <div className={`todo-status-item ${item.status}`} key={item.id}>
+                                <span className="todo-status-mark">
+                                  {item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '•' : ''}
+                                </span>
+                                <span className="todo-status-content">{item.content}</span>
+                                <span className="todo-status-label">{todoStatusLabel(item.status)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : message.kind === 'subagent_status' ? (
                         <div className={`subagent-status ${message.subagent?.status || 'running'}`}>
                           <div className="subagent-status-line">
                             <span className="subagent-dot" />
@@ -1240,56 +1485,29 @@ export default function App() {
                             <div className="subagent-error">{message.subagent.error}</div>
                           )}
                         </div>
+                      ) : message.confirmation ? (
+                        <>
+                          <ToolConfirmationCard
+                            confirmation={message.confirmation}
+                            chatBusy={chatBusy}
+                            onConfirm={() => handleToolConfirm(message.id, message.confirmation.confirmId)}
+                          />
+                          <ContextUsageLine usage={message.tokenUsage} />
+                        </>
                       ) : message.content || message.providerEvents?.length ? (
                         <>
                           {message.content ? <MarkdownMessage content={message.content} /> : null}
                           <ProviderEventList events={message.providerEvents} />
-                          {message.confirmation && (
-                            <div className="tool-confirm-panel">
-                              <div className="tool-confirm-head">
-                                <Lock size={17} />
-                                <span>工具操作等待确认</span>
-                              </div>
-                              <div className="tool-confirm-meta">
-                                <span>工具：{message.confirmation.tool}</span>
-                                <span>操作：{message.confirmation.action}</span>
-                                {message.confirmation.expiresAt && <span>过期：{message.confirmation.expiresAt}</span>}
-                              </div>
-                              {message.confirmation.summary && (
-                                <div className="tool-confirm-summary">{message.confirmation.summary}</div>
-                              )}
-                              {message.confirmation.command && (
-                                <code className="tool-confirm-command">{message.confirmation.command}</code>
-                              )}
-                              {message.confirmation.error && (
-                                <div className="tool-confirm-error">{message.confirmation.error}</div>
-                              )}
-                              <button
-                                className="tool-confirm-button"
-                                type="button"
-                                disabled={message.confirmation.status !== 'pending' || chatBusy}
-                                onClick={() => handleToolConfirm(message.id, message.confirmation.confirmId)}
-                              >
-                                {message.confirmation.status === 'running' ? (
-                                  '正在执行...'
-                                ) : message.confirmation.status === 'confirmed' ? (
-                                  <>
-                                    <Check size={16} />
-                                    已执行
-                                  </>
-                                ) : (
-                                  '确认执行'
-                                )}
-                              </button>
-                            </div>
-                          )}
                           <ContextUsageLine usage={message.tokenUsage} />
                         </>
                       ) : (
                         <div className="thinking">正在思考</div>
                       )
                     ) : (
-                      message.content
+                      <>
+                        {message.content}
+                        <MessageAttachmentList attachments={message.attachments || []} />
+                      </>
                     )}
                   </div>
                 </article>
@@ -1310,6 +1528,32 @@ export default function App() {
               <div className="composer-wrap">
                 {chatError && <div className="chat-error">{chatError}</div>}
                 <form className="composer" onSubmit={handleSend}>
+                  <input
+                    ref={attachmentInputRef}
+                    className="attachment-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleAttachmentSelect}
+                  />
+                  {pendingAttachments.length > 0 && (
+                    <div className="pending-attachments">
+                      {pendingAttachments.map((item) => (
+                        <span className="pending-attachment" key={item.id}>
+                          <ImageIcon size={15} />
+                          <span>{item.name}</span>
+                          <small>{formatFileSize(item.size)}</small>
+                          <button
+                            type="button"
+                            aria-label={`移除 ${item.name}`}
+                            onClick={() => removePendingAttachment(item.id)}
+                          >
+                            <X size={13} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
@@ -1396,7 +1640,13 @@ export default function App() {
                       </button>
                     </div>
                     <div className="composer-right-tools">
-                      <button className="composer-tool" type="button" aria-label="添加">
+                      <button
+                        className="composer-tool"
+                        type="button"
+                        aria-label="添加图片"
+                        disabled={chatBusy}
+                        onClick={() => attachmentInputRef.current?.click()}
+                      >
                         <Plus size={24} />
                       </button>
                       <button className="composer-tool soft" type="button" aria-label="技能">
@@ -1405,7 +1655,7 @@ export default function App() {
                       <button className="composer-tool soft" type="button" aria-label="语音输入">
                         <Mic size={21} />
                       </button>
-                      <button className="send-button" type="submit" disabled={!draft.trim() || chatBusy}>
+                      <button className="send-button" type="submit" disabled={(!draft.trim() && pendingAttachments.length === 0) || chatBusy}>
                         <ArrowUp size={20} />
                       </button>
                     </div>

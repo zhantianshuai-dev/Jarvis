@@ -9,20 +9,28 @@ import com.zhan.jarvis.agent.loop.LoopObserver;
 import com.zhan.jarvis.agent.loop.LoopOutcome;
 import com.zhan.jarvis.agent.loop.LoopState;
 import com.zhan.jarvis.agent.loop.PendingConfirmation;
-import com.zhan.jarvis.agent.loop.RuntimeContextBudgeter;
 import com.zhan.jarvis.agent.loop.SseLoopObserver;
 import com.zhan.jarvis.agent.loop.ToolCallBuilder;
 import com.zhan.jarvis.agent.loop.ToolResult;
 import com.zhan.jarvis.agent.loop.TokenUsageAccumulator;
+import com.zhan.jarvis.agent.event.RunEvent;
+import com.zhan.jarvis.agent.event.RunEventStore;
+import com.zhan.jarvis.agent.middleware.AgentMiddlewareChain;
+import com.zhan.jarvis.agent.planner.ExecutionPlan;
+import com.zhan.jarvis.agent.planner.PlanManager;
+import com.zhan.jarvis.agent.planner.Planner;
+import com.zhan.jarvis.artifact.ArtifactManager;
 import com.zhan.jarvis.llm.AgentLLMProvider;
 import com.zhan.jarvis.llm.ChatResponse;
 import com.zhan.jarvis.llm.Message;
+import com.zhan.jarvis.llm.ToolDefinition;
 import com.zhan.jarvis.llm.ToolCall;
 import com.zhan.jarvis.permission.AgentCheckpoint;
 import com.zhan.jarvis.permission.AgentCheckpointStore;
 import com.zhan.jarvis.permission.PendingToolPermission;
 import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionManager;
+import com.zhan.jarvis.todo.TodoManager;
 import com.zhan.jarvis.tool.ToolContext;
 import com.zhan.jarvis.tool.ToolPayloadSanitizer;
 import com.zhan.jarvis.tool.ToolRegistry;
@@ -67,7 +75,12 @@ public class AgentLoop {
     private final AgentCheckpointStore checkpointStore;
     private final WorkspaceResolver workspaceResolver;
     private final ToolPayloadSanitizer toolPayloadSanitizer;
-    private final RuntimeContextBudgeter runtimeContextBudgeter;
+    private final AgentMiddlewareChain middlewareChain;
+    private final RunEventStore runEventStore;
+    private final ArtifactManager artifactManager;
+    private final Planner planner;
+    private final PlanManager planManager;
+    private final TodoManager todoManager;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -96,6 +109,47 @@ public class AgentLoop {
                      SessionManager sessionManager, ObjectMapper objectMapper,
                      HookManager hookManager, AgentCheckpointStore checkpointStore,
                      WorkspaceResolver workspaceResolver) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, AgentMiddlewareChain.EMPTY, RunEventStore.NOOP, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, RunEventStore.NOOP, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, runEventStore, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore, ArtifactManager artifactManager) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, runEventStore, artifactManager,
+                null, null, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore, ArtifactManager artifactManager,
+                     Planner planner, PlanManager planManager, TodoManager todoManager) {
         this.agentConfig = agentConfig;
         this.llmProvider = llmProvider;
         this.toolRegistry = toolRegistry;
@@ -106,7 +160,12 @@ public class AgentLoop {
         this.checkpointStore = checkpointStore;
         this.workspaceResolver = workspaceResolver;
         this.toolPayloadSanitizer = new ToolPayloadSanitizer(objectMapper);
-        this.runtimeContextBudgeter = new RuntimeContextBudgeter();
+        this.middlewareChain = middlewareChain == null ? AgentMiddlewareChain.EMPTY : middlewareChain;
+        this.runEventStore = runEventStore == null ? RunEventStore.NOOP : runEventStore;
+        this.artifactManager = artifactManager;
+        this.planner = planner;
+        this.planManager = planManager;
+        this.todoManager = todoManager;
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -202,15 +261,18 @@ public class AgentLoop {
         ));
 
         var messages = contextBuilder.build(session, userMessage, 20, runMode, workspace);
-        sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
+        applyVisionAttachments(messages, metadata, userMessage);
+        sessionManager.addMessage(sessionId, "user", displayMessage(metadata, userMessage), Map.of(
                 "source", "Jarvis",
                 "user_id", userId != null ? userId : "",
                 "display_event", true,
                 "event_type", "user_message"
         ));
 
-        return runLoop(newState(sessionKey, sessionId, userId,
-                withCurrentMessage(metadata, userMessage), messages, 0, false, Map.of()), LoopObserver.NOOP).reply();
+        var state = newState(sessionKey, sessionId, userId,
+                withCurrentMessage(metadata, userMessage), messages, 0, false, Map.of());
+        prepareExecutionPlan(state, userMessage, LoopObserver.NOOP);
+        return runLoop(state, LoopObserver.NOOP).reply();
     }
 
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
@@ -243,7 +305,8 @@ public class AgentLoop {
             ));
 
             var messages = contextBuilder.build(session, userMessage, 20, runMode, workspace);
-            sessionManager.addMessage(sessionId, "user", userMessage, Map.of(
+            applyVisionAttachments(messages, metadata, userMessage);
+            sessionManager.addMessage(sessionId, "user", displayMessage(metadata, userMessage), Map.of(
                     "source", "Jarvis",
                     "user_id", userId != null ? userId : "",
                     "stream", true,
@@ -251,8 +314,10 @@ public class AgentLoop {
                     "event_type", "user_message"
             ));
 
-            runLoop(newState(sessionKey, sessionId, userId, withCurrentMessage(metadata, userMessage), messages, 0, true,
-                    Map.of("stream", true)), observer);
+            var state = newState(sessionKey, sessionId, userId, withCurrentMessage(metadata, userMessage), messages, 0, true,
+                    Map.of("stream", true));
+            prepareExecutionPlan(state, userMessage, observer);
+            runLoop(state, observer);
             sink.complete();
         } catch (Exception e) {
             log.warn("[AgentLoop] stream 执行失败: {}", e.getMessage());
@@ -287,6 +352,51 @@ public class AgentLoop {
         ), LoopObserver.NOOP);
     }
 
+    private void prepareExecutionPlan(LoopState state, String userMessage, LoopObserver observer) {
+        if (planner == null || planManager == null || todoManager == null) {
+            return;
+        }
+        ExecutionPlan plan = planner.plan(state.runId(), state.sessionId(), state.runMode(),
+                userMessage, state.workspace());
+        if (plan == null || !plan.hasSteps()) {
+            return;
+        }
+        String contextBlock = planner.renderForContext(plan);
+        if (!contextBlock.isBlank()) {
+            insertBeforeLastUser(state.messages(), Message.system(contextBlock));
+        }
+        Map<String, Object> planPayload = planManager.payload(plan);
+        try {
+            planManager.save(plan);
+        } catch (Exception e) {
+            log.warn("[Planner] 保存执行计划失败: {}", e.getMessage());
+            log.debug("[Planner] 保存执行计划失败详情", e);
+        }
+
+        Map<String, Object> todoPayload = Map.of();
+        try {
+            var todoState = todoManager.update(state.sessionId(), state.runId(), planTodoItems(plan));
+            todoPayload = todoManager.payload(todoState);
+        } catch (Exception e) {
+            log.warn("[Planner] 同步 Todo 失败: {}", e.getMessage());
+            log.debug("[Planner] 同步 Todo 失败详情", e);
+        }
+
+        sessionManager.addMessage(state.sessionId(), "assistant", "", Map.of(
+                "source", "Jarvis",
+                "trace", true,
+                "hidden", true,
+                "display_event", false,
+                "trace_type", "execution_plan",
+                "event_type", "execution_plan",
+                "plan", planPayload
+        ));
+        recordEvent(state, "plan.created", plan.goal(), planPayload);
+        observer.onPlanUpdate(state, planPayload, todoPayload);
+        log.info("[Planner] 已生成执行计划: sessionId={}, runId={}, steps={}, llm={}",
+                state.sessionId(), state.runId(), plan.steps().size(), plan.generatedByLlm());
+    }
+
     /**
      * 唯一的 Agent 循环实现。
      * 普通 HTTP、SSE、人工确认恢复都通过不同 LoopState/Observer 复用这里。
@@ -294,27 +404,40 @@ public class AgentLoop {
     private LoopOutcome runLoop(LoopState state, LoopObserver observer) {
         int iteration = state.startIteration();
         int maxIterations = state.runMode().maxIterations(agentConfig.maxIterations());
+        recordEvent(state, "run.started", "", Map.of(
+                "mode", state.runMode().value(),
+                "workspace", state.workspace(),
+                "stream", state.stream(),
+                "start_iteration", iteration,
+                "max_iterations", maxIterations
+        ));
         while (iteration < maxIterations) {
             iteration++;
             log.info("[AgentLoop] 第 {}/{} 轮迭代: sessionId={}, mode={}, stream={}",
                     iteration, maxIterations, state.sessionId(), state.runMode().value(), state.stream());
+            recordEvent(state, "iteration.started", "", Map.of("iteration", iteration));
 
             var tools = toolRegistry.listToolsForMode(
                     state.runMode(),
                     latestUserMessage(state),
                     state.activeDeferredTools()
             );
-            var budget = runtimeContextBudgeter.apply(state.messages(), tools, agentConfig.contextBudget());
-            if (budget.changed()) {
-                log.info("[AgentLoop] 运行态上下文已压缩: beforeTokens={}, afterTokens={}, compressed={}, removed={}",
-                        budget.beforeTokens(), budget.afterTokens(), budget.compressedMessages(), budget.removedMessages());
-            } else {
-                log.debug("[AgentLoop] 运行态上下文预算: estimatedTokens={}", budget.afterTokens());
-            }
+            middlewareChain.beforeModel(state, iteration, tools);
             ChatResponse response = state.stream()
                     ? streamChatResponse(state, tools, observer, iteration)
                     : llmProvider.chat(state.messages(), tools);
+            middlewareChain.afterModel(state, iteration, response);
             state.tokenUsage().add(response.usage());
+            recordEvent(state, "model.completed", response.content(), Map.of(
+                    "iteration", iteration,
+                    "finish_reason", response.finishReason() != null ? response.finishReason() : "",
+                    "tool_calls", response.hasToolCalls() ? response.toolCalls().size() : 0,
+                    "token_usage", response.usage() != null ? Map.of(
+                            "prompt_tokens", response.usage().promptTokens(),
+                            "completion_tokens", response.usage().completionTokens(),
+                            "total_tokens", response.usage().totalTokens()
+                    ) : Map.of()
+            ));
             log.info("[AgentLoop] LLM 响应: finishReason={}, content长度={}, toolCalls={}",
                     response.finishReason(),
                     response.content() != null ? response.content().length() : 0,
@@ -326,6 +449,12 @@ public class AgentLoop {
                     log.info("[AgentLoop] 第{}轮工具调用: {}({})", iteration, tc.name(),
                             toolPayloadSanitizer.loggableArguments(tc.name(), tc.arguments()));
                     observer.onToolCall(state, iteration, toolPayloadSanitizer.sanitizeToolCall(tc));
+                    recordEvent(state, "tool.call", tc.name(), Map.of(
+                            "iteration", iteration,
+                            "tool_call_id", tc.id(),
+                            "tool_name", tc.name(),
+                            "arguments", toolPayloadSanitizer.sanitizeArguments(tc.name(), tc.arguments())
+                    ));
                 }
                 //当前工具结果加入到当前上下文
                 state.messages().add(Message.assistant(sanitizedToolCalls, response.reasoningContent()));
@@ -369,16 +498,14 @@ public class AgentLoop {
         return outcome;
     }
 
-    private ChatResponse streamChatResponse(LoopState state, List<?> tools, LoopObserver observer, int iteration) {
+    private ChatResponse streamChatResponse(LoopState state, List<ToolDefinition> tools, LoopObserver observer, int iteration) {
         var content = new StringBuilder();
         var reasoning = new StringBuilder();
         var toolBuilders = new TreeMap<Integer, ToolCallBuilder>();
         var finishReason = new AtomicReference<String>();
         var usage = new AtomicReference<>(new ChatResponse.TokenUsage(0, 0, 0));
 
-        @SuppressWarnings("unchecked")
-        var typedTools = (List<com.zhan.jarvis.llm.ToolDefinition>) tools;
-        llmProvider.streamChat(state.messages(), typedTools)
+        llmProvider.streamChat(state.messages(), tools)
                 .doOnNext(delta -> {
                     if (delta.providerEvent() != null) {
                         var event = delta.providerEvent();
@@ -420,6 +547,59 @@ public class AgentLoop {
         );
     }
 
+    private void applyVisionAttachments(List<Message> messages, Map<String, Object> metadata, String userMessage) {
+        if (messages == null || metadata == null) {
+            return;
+        }
+        if (Boolean.parseBoolean(String.valueOf(metadata.get("vision_disabled")))) {
+            insertBeforeLastUser(messages, Message.system(
+                    "用户上传了图片，但当前 JARVIS_VISION_ENABLED=false，主模型无法读取图片内容。"
+                            + "请直接告知用户需要启用视觉能力后重试，不要猜测图片内容。"));
+            return;
+        }
+        Object raw = metadata.get("vision_image_urls");
+        if (!(raw instanceof List<?> imageUrls) || imageUrls.isEmpty()) {
+            return;
+        }
+        var parts = new ArrayList<Message.ContentPart>();
+        parts.add(Message.ContentPart.text(userMessage != null && !userMessage.isBlank()
+                ? userMessage
+                : "请分析这些图片。"));
+        for (Object item : imageUrls) {
+            String url = item == null ? "" : String.valueOf(item);
+            if (!url.isBlank()) {
+                parts.add(Message.ContentPart.imageUrl(url));
+            }
+        }
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Message message = messages.get(i);
+            if ("user".equals(message.role())) {
+                messages.set(i, Message.user(message.content(), parts));
+                return;
+            }
+        }
+    }
+
+    private void insertBeforeLastUser(List<Message> messages, Message notice) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if ("user".equals(messages.get(i).role())) {
+                messages.add(i, notice);
+                return;
+            }
+        }
+        messages.add(notice);
+    }
+
+    private String displayMessage(Map<String, Object> metadata, String fallback) {
+        if (metadata != null) {
+            Object value = metadata.get("display_message");
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return String.valueOf(value);
+            }
+        }
+        return fallback;
+    }
+
     private LoopOutcome finishRequiresConfirmation(LoopState state, int iteration, String reply) {
         var metadata = withTokenUsage(state, mergedMeta(state, Map.of(
                 "source", "Jarvis",
@@ -436,6 +616,7 @@ public class AgentLoop {
                 "finish_reason", "requires_confirmation",
                 "max_iterations_reached", false
         )));
+        recordEvent(state, "run.requires_confirmation", reply, metadata);
         return new LoopOutcome(state.sessionId(), reply, iteration, "requires_confirmation", true, false,
                 state.tokenUsage().toMap());
     }
@@ -456,6 +637,11 @@ public class AgentLoop {
                 "max_iterations_reached", false
         )));
         log.info("[AgentLoop] 任务完成，共 {} 轮迭代", iteration);
+        recordEvent(state, "run.completed", reply, Map.of(
+                "iteration", iteration,
+                "finish_reason", finishReason,
+                "token_usage", state.tokenUsage().toMap()
+        ));
         return new LoopOutcome(state.sessionId(), reply, iteration, finishReason, false, false,
                 state.tokenUsage().toMap());
     }
@@ -474,6 +660,10 @@ public class AgentLoop {
                 "finish_reason", "max_iterations",
                 "max_iterations_reached", true
         )));
+        recordEvent(state, "run.max_iterations", reply, Map.of(
+                "max_iterations", state.runMode().maxIterations(agentConfig.maxIterations()),
+                "token_usage", state.tokenUsage().toMap()
+        ));
         return new LoopOutcome(state.sessionId(), reply, state.runMode().maxIterations(agentConfig.maxIterations()),
                 "max_iterations", false, true,
                 state.tokenUsage().toMap());
@@ -489,10 +679,19 @@ public class AgentLoop {
             state.messages().add(Message.tool(result.toolCallId(), visibleResult));
             sessionManager.addMessage(state.sessionId(), "tool", visibleResult,
                     toolResultMetadata(iteration, result, visibleResult));
+            registerArtifactFromToolResult(state, result, visibleResult);
             observer.onToolResult(state, iteration,
                     new ToolResult(result.toolCallId(), result.toolName(),
                             toolPayloadSanitizer.sanitizeArguments(result.toolName(), result.arguments()),
                             visibleResult));
+            recordEvent(state, "tool.result", visibleResult, Map.of(
+                    "iteration", iteration,
+                    "tool_call_id", result.toolCallId(),
+                    "tool_name", result.toolName(),
+                    "raw_result_length", result.result() != null ? result.result().length() : 0,
+                    "visible_result_length", visibleResult != null ? visibleResult.length() : 0,
+                    "compressed", result.result() != null && !Objects.equals(result.result(), visibleResult)
+            ));
         }
     }
 
@@ -651,9 +850,11 @@ public class AgentLoop {
     private LoopState newState(SessionKey sessionKey, String sessionId, String userId,
                                Map<String, Object> metadata, List<Message> messages,
                                int startIteration, boolean stream, Map<String, Object> outputMetadata) {
-        var safeMetadata = metadata == null ? Map.<String, Object>of() : metadata;
+        String runId = "run_" + UUID.randomUUID();
+        var safeMetadata = new LinkedHashMap<String, Object>(metadata == null ? Map.of() : metadata);
+        safeMetadata.putIfAbsent("run_id", runId);
         return new LoopState(
-                "run_" + UUID.randomUUID(),
+                runId,
                 sessionKey,
                 sessionId,
                 userId,
@@ -683,6 +884,20 @@ public class AgentLoop {
         merged.put("current_message", userMessage != null ? userMessage : "");
         merged.put("workspace", workspaceFor(metadata));
         return merged;
+    }
+
+    private List<Map<String, Object>> planTodoItems(ExecutionPlan plan) {
+        var items = new ArrayList<Map<String, Object>>();
+        int order = 1;
+        for (var step : plan.steps()) {
+            var item = new LinkedHashMap<String, Object>();
+            item.put("id", step.id());
+            item.put("content", step.title());
+            item.put("status", step.status().value());
+            item.put("order", order++);
+            items.add(item);
+        }
+        return items;
     }
 
     private String workspaceFor(Map<String, Object> metadata) {
@@ -856,6 +1071,57 @@ public class AgentLoop {
             return;
         }
         hookManager.trigger(HookContext.of(eventType, sessionId, userId, payload));
+    }
+
+    private void recordEvent(LoopState state, String type, String content, Map<String, Object> metadata) {
+        runEventStore.append(new RunEvent(
+                "event_" + UUID.randomUUID(),
+                state.runId(),
+                state.sessionId(),
+                state.userId(),
+                type,
+                content == null ? "" : content,
+                metadata == null ? Map.of() : metadata,
+                Instant.now()
+        ));
+    }
+
+    private void registerArtifactFromToolResult(LoopState state, ToolResult result, String visibleResult) {
+        if (artifactManager == null || result == null || visibleResult == null || visibleResult.isBlank()) {
+            return;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(visibleResult);
+            String tool = root.path("tool").asText(result.toolName());
+            String path = root.path("path").asText("");
+            String operation = root.path("operation").asText("");
+            if (!"write_file".equals(tool) || path.isBlank() || !"write".equals(operation)) {
+                return;
+            }
+            var artifact = artifactManager.registerOutput(state.sessionId(), state.userId(), path, "write_file",
+                    root.path("summary").asText("Agent 写入文件"), Map.of(
+                            "tool_call_id", result.toolCallId(),
+                            "operation", operation,
+                            "content_chars", root.path("content_chars").asInt(0)
+                    ));
+            state.artifacts().add(new com.zhan.jarvis.agent.runtime.RuntimeArtifact(
+                    artifact.artifactId(),
+                    artifact.name(),
+                    artifact.path(),
+                    artifact.contentType(),
+                    artifact.size(),
+                    artifact.summary()
+            ));
+            recordEvent(state, "artifact.created", artifact.path(), Map.of(
+                    "artifact_id", artifact.artifactId(),
+                    "name", artifact.name(),
+                    "kind", artifact.kind(),
+                    "source", artifact.source(),
+                    "size", artifact.size()
+            ));
+        } catch (Exception e) {
+            log.debug("[AgentLoop] 工具结果未登记为 artifact: {}", e.getMessage());
+        }
     }
 
     private void emit(FluxSink<Map<String, Object>> sink, String type, String sessionId, String content,

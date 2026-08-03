@@ -94,6 +94,31 @@ export function deleteChatSession(token, sessionId) {
   });
 }
 
+export async function uploadChatAttachment(token, sessionId, file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/attachments`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+  } catch (error) {
+    throw new Error(`无法上传附件：${error.message}`);
+  }
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    const error = new Error(data.msg || data.message || `上传失败：${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data.attachment;
+}
+
 export function listWorktrees(token) {
   return request('/api/v1/git/worktrees', { method: 'GET', token });
 }
@@ -148,10 +173,13 @@ export async function streamChat(
     message,
     mode,
     workspace,
+    attachments,
     onToken,
     onReasoning,
     onToolCall,
     onToolResult,
+    onPlanUpdate,
+    onTodoUpdate,
     onProviderEvent,
     onDone,
     signal,
@@ -166,7 +194,7 @@ export async function streamChat(
         Accept: 'text/event-stream',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ sessionId, message, mode, workspace }),
+      body: JSON.stringify({ sessionId, message, mode, workspace, attachments }),
       signal,
     });
   } catch (error) {
@@ -218,6 +246,14 @@ export async function streamChat(
     }
     if (event === 'tool_result') {
       onToolResult?.(data);
+      return;
+    }
+    if (event === 'plan_update') {
+      onPlanUpdate?.(data);
+      return;
+    }
+    if (event === 'todo_update') {
+      onTodoUpdate?.(data);
       return;
     }
     if (event === 'llm_retry' || event === 'llm_fallback' || event === 'llm_circuit_open') {

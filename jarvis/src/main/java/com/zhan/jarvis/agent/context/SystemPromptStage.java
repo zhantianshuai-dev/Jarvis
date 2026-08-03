@@ -48,6 +48,14 @@ public class SystemPromptStage implements ContextStage {
                 .replace("{now}", "")
                 .replace("{tool_summary}", toolExposureStage.buildToolSummary(request)));
 
+        sb.append("""
+
+                <planning>
+                对复杂、多步骤、需要修改文件或需要派生子 Agent 的任务，先用 todo_update 建立简短 Todo 列表。
+                当开始、完成或失败某个步骤时同步调用 todo_update 更新状态；同一时间最多保留一个 in_progress。
+                普通问答、概念解释和单步小任务不要创建 Todo。
+                </planning>""");
+
         String deferredToolsSection = toolExposureStage.buildDeferredToolsSection(request);
         if (!deferredToolsSection.isBlank()) {
             sb.append("\n\n").append(deferredToolsSection);

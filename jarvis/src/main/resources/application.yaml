@@ -105,6 +105,13 @@ jarvis:
       当前时间: {now}
       工作目录: {workspace}
 
+  # ---- Planner 任务拆解与编排 ----
+  planner:
+    enabled: ${JARVIS_PLANNER_ENABLED:true}
+    super-agent-always-plan: ${JARVIS_PLANNER_SUPER_AGENT_ALWAYS_PLAN:true}
+    complexity-threshold: ${JARVIS_PLANNER_COMPLEXITY_THRESHOLD:5}
+    min-message-chars: ${JARVIS_PLANNER_MIN_MESSAGE_CHARS:12}
+
   # ---- HTTP API 认证（PostgreSQL 用户表 + Sa-Token）----
   auth:
     enabled: ${JARVIS_AUTH_ENABLED:false}
@@ -141,6 +148,21 @@ jarvis:
     api-key: ${IMAGE_GEN_API_KEY:}
     model: ${IMAGE_GEN_MODEL:gpt-image-2}
     size: ${IMAGE_GEN_SIZE:1024x1024}
+
+  # ---- 图片理解（视觉模型）----
+  vision:
+    enabled: ${JARVIS_VISION_ENABLED:false}
+    api-base: ${JARVIS_VISION_API_BASE:https://dashscope.aliyuncs.com/compatible-mode}
+    api-key: ${JARVIS_VISION_API_KEY:${BAILIAN_API_KEY:}}
+    model: ${JARVIS_VISION_MODEL:qwen3-vl-flash}
+    max-tokens: ${JARVIS_VISION_MAX_TOKENS:1200}
+
+  # ---- 工具执行沙箱 ----
+  sandbox:
+    backend: ${JARVIS_SANDBOX_BACKEND:direct}
+    base-url: ${JARVIS_SANDBOX_BASE_URL:http://localhost:8090}
+    host-root: ${JARVIS_SANDBOX_HOST_ROOT:${JARVIS_PROJECT_WORKSPACE:.}}
+    sandbox-root: ${JARVIS_SANDBOX_ROOT:/workspace}
 
   # ---- Heartbeat 自主唤醒 ----
   heartbeat:

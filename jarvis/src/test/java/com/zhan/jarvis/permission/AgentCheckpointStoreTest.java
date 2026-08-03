@@ -2,8 +2,12 @@ package com.zhan.jarvis.permission;
 
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.llm.Message;
+import com.zhan.jarvis.session.SessionFileSpaceManager;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import tools.jackson.databind.ObjectMapper;
 
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -13,9 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentCheckpointStoreTest {
 
+    @TempDir
+    Path tempDir;
+
     @Test
     void takeByConfirmIdConsumesCheckpointOnce() {
-        var store = new AgentCheckpointStore();
+        var store = store();
         var checkpoint = checkpoint("checkpoint_1", "confirm_1", Instant.now().plusSeconds(60));
 
         store.put(checkpoint);
@@ -26,7 +33,7 @@ class AgentCheckpointStoreTest {
 
     @Test
     void expiredCheckpointIsNotReturned() {
-        var store = new AgentCheckpointStore();
+        var store = store();
 
         store.put(checkpoint("checkpoint_1", "confirm_1", Instant.now().minusSeconds(1)));
 
@@ -36,7 +43,7 @@ class AgentCheckpointStoreTest {
 
     @Test
     void listSessionReturnsCurrentCheckpoints() {
-        var store = new AgentCheckpointStore();
+        var store = store();
         var first = checkpoint("checkpoint_1", "confirm_1", Instant.now().plusSeconds(60));
         var second = checkpoint("checkpoint_2", "confirm_2", Instant.now().plusSeconds(60));
 
@@ -46,6 +53,24 @@ class AgentCheckpointStoreTest {
         assertThat(store.listSession("session_1"))
                 .extracting(AgentCheckpoint::checkpointId)
                 .containsExactlyInAnyOrder("checkpoint_1", "checkpoint_2");
+    }
+
+    @Test
+    void checkpointCanBeRecoveredFromFile() {
+        var firstStore = store();
+        var checkpoint = checkpoint("checkpoint_1", "confirm_1", Instant.now().plusSeconds(60));
+        firstStore.put(checkpoint);
+
+        var secondStore = store();
+
+        assertThat(secondStore.take("confirm_1"))
+                .map(AgentCheckpoint::checkpointId)
+                .contains("checkpoint_1");
+        assertThat(secondStore.take("confirm_1")).isEmpty();
+    }
+
+    private AgentCheckpointStore store() {
+        return new AgentCheckpointStore(new SessionFileSpaceManager(tempDir.toString()), new ObjectMapper());
     }
 
     private AgentCheckpoint checkpoint(String checkpointId, String confirmId, Instant expiresAt) {

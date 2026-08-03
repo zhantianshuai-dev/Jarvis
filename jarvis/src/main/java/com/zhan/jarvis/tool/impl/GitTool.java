@@ -1,21 +1,18 @@
 package com.zhan.jarvis.tool.impl;
 
+import com.zhan.jarvis.sandbox.SandboxManager;
 import com.zhan.jarvis.tool.McpTool;
 import com.zhan.jarvis.tool.ToolContext;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Git 工具。
@@ -24,17 +21,21 @@ import java.util.concurrent.TimeUnit;
  */
 public class GitTool implements McpTool {
 
-    private static final int TIMEOUT_SECONDS = 30;
-    private static final int MAX_OUTPUT_CHARS = 50_000;
     private static final int DEFAULT_LOG_LIMIT = 10;
     private static final int MAX_LOG_LIMIT = 50;
     private static final int MAX_DIFF_OUTPUT_CHARS = 12_000;
 
     private final ObjectMapper objectMapper;
+    private final SandboxManager sandboxManager;
     private final Path defaultGitWorkspace;
 
     public GitTool(ObjectMapper objectMapper, String gitWorkspaceDir) {
+        this(objectMapper, new SandboxManager(new com.zhan.jarvis.sandbox.DirectBackend()), gitWorkspaceDir);
+    }
+
+    public GitTool(ObjectMapper objectMapper, SandboxManager sandboxManager, String gitWorkspaceDir) {
         this.objectMapper = objectMapper;
+        this.sandboxManager = sandboxManager;
         this.defaultGitWorkspace = Path.of(gitWorkspaceDir).toAbsolutePath().normalize();
     }
 
@@ -522,41 +523,23 @@ public class GitTool implements McpTool {
     }
 
     private GitResult runGit(List<String> command, Path cwd) {
-        var output = new StringBuilder();
         try {
-            var pb = new ProcessBuilder(command);
-            pb.directory(cwd.toFile());
-            pb.redirectErrorStream(true);
-            var process = pb.start();
-            Thread reader = Thread.startVirtualThread(() -> readOutput(process, output));
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                reader.join(Duration.ofSeconds(1).toMillis());
-                //-1就是超时了
-                return new GitResult(-1, output.toString(), true);
-            }
-            reader.join(Duration.ofSeconds(1).toMillis());
-            // 正常返回 Git 运行后的结果。
-            return new GitResult(process.exitValue(), output.toString(), false);
+            var result = sandboxManager.execute(shellCommand(command), cwd.toString());
+            return new GitResult(result.exitCode(), result.output(), result.timedOut());
         } catch (Exception e) {
             return new GitResult(-1, "Git 命令执行异常: " + e.getMessage(), false);
         }
     }
 
-    private static void readOutput(Process process, StringBuilder output) {
-        try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                synchronized (output) {
-                    if (output.length() < MAX_OUTPUT_CHARS) {
-                        output.append(line).append('\n');
-                    }
-                }
-            }
-        } catch (IOException ignored) {
-            // 超时或进程退出时流可能关闭，返回已读取内容即可。
+    private static String shellCommand(List<String> command) {
+        return command.stream().map(GitTool::shellQuote).reduce((left, right) -> left + " " + right).orElse("");
+    }
+
+    private static String shellQuote(String value) {
+        if (value == null || value.isEmpty()) {
+            return "''";
         }
+        return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
     private String toJson(Object value) {

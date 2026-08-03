@@ -845,6 +845,77 @@ button {
   line-height: 1.55;
 }
 
+.todo-status-card {
+  display: grid;
+  gap: 8px;
+  max-width: 620px;
+  color: #3f3f3f;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.todo-status-title {
+  color: #6b6b6b;
+  font-size: 13px;
+}
+
+.todo-status-list {
+  display: grid;
+  gap: 5px;
+}
+
+.todo-status-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 0;
+}
+
+.todo-status-mark {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d8d8d8;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.todo-status-item.in_progress .todo-status-mark {
+  border-color: #202020;
+  color: #202020;
+}
+
+.todo-status-item.completed .todo-status-mark {
+  border-color: #202020;
+  background: #202020;
+}
+
+.todo-status-item.failed .todo-status-mark {
+  border-color: #b42318;
+  background: #b42318;
+}
+
+.todo-status-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.todo-status-item.completed .todo-status-content {
+  color: #777777;
+  text-decoration: line-through;
+}
+
+.todo-status-label {
+  color: #8a8a8a;
+  font-size: 12px;
+}
+
 .subagent-status-line {
   display: inline-flex;
   align-items: center;
@@ -1049,72 +1120,86 @@ button {
 
 .tool-confirm-panel {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
-  padding: 14px;
-  border: 1px solid #dedede;
-  border-radius: 8px;
-  background: #fbfbfb;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 18px;
+  border: 1px solid #e6e6e6;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
 }
 
 .tool-confirm-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: #202123;
-  font-weight: 650;
-}
-
-.tool-confirm-meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  color: #6f6f6f;
-  font-size: 13px;
+  align-items: center;
+  gap: 11px;
+  color: #202123;
 }
 
-.tool-confirm-summary {
-  color: #2f2f2f;
-  font-size: 13px;
+.tool-confirm-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: #fff4e5;
+  color: #e56a12;
 }
 
-.tool-confirm-command {
+.tool-confirm-label {
   display: block;
-  max-width: 100%;
-  overflow-x: auto;
-  border-radius: 6px;
-  background: #f0f0f0;
-  padding: 9px 10px;
-  color: #2f2f2f;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  margin-bottom: 2px;
+  color: #777777;
   font-size: 12px;
-  white-space: pre;
+  font-weight: 600;
 }
 
-.tool-confirm-error {
-  color: #9b1c1c;
-  font-size: 13px;
+.tool-confirm-head h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.tool-confirm-description {
+  margin: 0;
+  color: #555555;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .tool-confirm-button {
-  justify-self: start;
-  min-height: 36px;
+  justify-self: end;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 14px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 9px;
   background: #202123;
   color: #ffffff;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .tool-confirm-button:disabled {
   background: #d7d7dc;
   color: #5f5f5f;
   cursor: not-allowed;
+}
+
+.tool-confirm-panel.confirmed {
+  border-color: #cde8d6;
+  background: #f6fcf8;
+}
+
+.tool-confirm-panel.confirmed .tool-confirm-icon {
+  background: #e3f5e8;
+  color: #1f8b4c;
+}
+
+.tool-confirm-panel.confirmed .tool-confirm-button {
+  background: #dceee2;
+  color: #267746;
 }
 
 .thinking {
@@ -1152,10 +1237,10 @@ button {
 }
 
 .composer {
-  min-height: 132px;
+  min-height: 118px;
   display: grid;
-  grid-template-rows: minmax(56px, 1fr) 40px;
-  gap: 6px;
+  grid-template-rows: auto minmax(44px, 1fr) 34px;
+  gap: 4px;
   padding: 12px 14px 8px;
   border: 1px solid #e1e1e1;
   border-radius: 18px;
@@ -1163,11 +1248,79 @@ button {
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.035);
 }
 
+.attachment-input {
+  display: none;
+}
+
+.pending-attachments,
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pending-attachments {
+  grid-row: 1;
+}
+
+.pending-attachment,
+.message-attachment {
+  max-width: 240px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: #f4f4f4;
+  color: #333333;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pending-attachment span,
+.message-attachment span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-attachment small,
+.message-attachment small {
+  flex: none;
+  color: #777777;
+  font-size: 11px;
+}
+
+.pending-attachment button {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #777777;
+}
+
+.pending-attachment button:hover {
+  background: #e8e8e8;
+  color: #222222;
+}
+
+.message-attachments {
+  margin-top: 7px;
+  justify-content: flex-end;
+}
+
 .composer-wrap svg {
   stroke-width: 1.65;
 }
 
 .composer-toolbar {
+  grid-row: 3;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1346,10 +1499,11 @@ button {
 }
 
 .composer textarea {
+  grid-row: 2;
   min-width: 0;
   width: 100%;
   max-height: 110px;
-  min-height: 56px;
+  min-height: 44px;
   resize: none;
   border: 0;
   outline: 0;
@@ -1873,8 +2027,7 @@ html[data-theme="dark"] .subagent-details .markdown-body {
 }
 
 html[data-theme="dark"] .markdown-body code,
-html[data-theme="dark"] .markdown-body pre,
-html[data-theme="dark"] .tool-confirm-command {
+html[data-theme="dark"] .markdown-body pre {
   background: #292929;
   color: #f0f0f0;
 }
@@ -1899,13 +2052,33 @@ html[data-theme="dark"] .tool-confirm-panel {
   background: #292929;
 }
 
-html[data-theme="dark"] .tool-confirm-head,
-html[data-theme="dark"] .tool-confirm-summary {
+html[data-theme="dark"] .tool-confirm-head h3 {
   color: #efefef;
 }
 
-html[data-theme="dark"] .tool-confirm-meta {
+html[data-theme="dark"] .tool-confirm-label,
+html[data-theme="dark"] .tool-confirm-description {
   color: #ababab;
+}
+
+html[data-theme="dark"] .tool-confirm-icon {
+  background: #4a351f;
+  color: #ff9b58;
+}
+
+html[data-theme="dark"] .tool-confirm-panel.confirmed {
+  border-color: #31553d;
+  background: #203126;
+}
+
+html[data-theme="dark"] .tool-confirm-panel.confirmed .tool-confirm-icon {
+  background: #294a35;
+  color: #83d6a1;
+}
+
+html[data-theme="dark"] .tool-confirm-panel.confirmed .tool-confirm-button {
+  background: #31543d;
+  color: #a9e7bd;
 }
 
 html[data-theme="dark"] .composer-wrap {
@@ -1916,6 +2089,26 @@ html[data-theme="dark"] .composer {
   border-color: #454545;
   background: #282828;
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.28);
+}
+
+html[data-theme="dark"] .pending-attachment,
+html[data-theme="dark"] .message-attachment {
+  background: #333333;
+  color: #efefef;
+}
+
+html[data-theme="dark"] .pending-attachment small,
+html[data-theme="dark"] .message-attachment small {
+  color: #ababab;
+}
+
+html[data-theme="dark"] .pending-attachment button {
+  color: #ababab;
+}
+
+html[data-theme="dark"] .pending-attachment button:hover {
+  background: #444444;
+  color: #ffffff;
 }
 
 html[data-theme="dark"] .composer textarea,

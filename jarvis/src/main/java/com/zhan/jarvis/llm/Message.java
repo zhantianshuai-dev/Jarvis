@@ -16,29 +16,44 @@ public record Message(
     String content,
     String toolCallId,
     List<ToolCall> toolCalls,
-    String reasoningContent
+    String reasoningContent,
+    List<ContentPart> contentParts
 ) {
     public static Message system(String content) {
-        return new Message("system", content, null, null, null);
+        return new Message("system", content, null, null, null, null);
     }
 
     public static Message user(String content) {
-        return new Message("user", content, null, null, null);
+        return new Message("user", content, null, null, null, null);
+    }
+
+    public static Message user(String content, List<ContentPart> contentParts) {
+        return new Message("user", content, null, null, null, contentParts);
     }
 
     public static Message assistant(String content) {
-        return new Message("assistant", content, null, null, null);
+        return new Message("assistant", content, null, null, null, null);
     }
 
     public static Message assistant(List<ToolCall> toolCalls) {
-        return new Message("assistant", null, null, toolCalls, null);
+        return new Message("assistant", null, null, toolCalls, null, null);
     }
 
     public static Message assistant(List<ToolCall> toolCalls, String reasoningContent) {
-        return new Message("assistant", null, null, toolCalls, reasoningContent);
+        return new Message("assistant", null, null, toolCalls, reasoningContent, null);
     }
 
     public static Message tool(String toolCallId, String result) {
-        return new Message("tool", result, toolCallId, null, null);
+        return new Message("tool", result, toolCallId, null, null, null);
+    }
+
+    public record ContentPart(String type, String text, String imageUrl) {
+        public static ContentPart text(String text) {
+            return new ContentPart("text", text, null);
+        }
+
+        public static ContentPart imageUrl(String imageUrl) {
+            return new ContentPart("image_url", null, imageUrl);
+        }
     }
 }

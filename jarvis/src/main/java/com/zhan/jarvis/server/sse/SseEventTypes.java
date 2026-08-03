@@ -11,6 +11,8 @@ public final class SseEventTypes {
     public static final String REASONING = "reasoning";
     public static final String TOOL_CALL = "tool_call";
     public static final String TOOL_RESULT = "tool_result";
+    public static final String PLAN_UPDATE = "plan_update";
+    public static final String TODO_UPDATE = "todo_update";
     public static final String SUBAGENT_STATUS = "subagent_status";
     public static final String DONE = "done";
     public static final String ERROR = "error";

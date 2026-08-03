@@ -8,6 +8,8 @@ import com.zhan.jarvis.channel.HttpChannel;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.server.sse.SseEventHub;
 import com.zhan.jarvis.server.sse.SseEventTypes;
+import com.zhan.jarvis.session.SessionFileSpaceManager;
+import com.zhan.jarvis.vision.VisionClient;
 import com.zhan.jarvis.workspace.WorkspaceResolver;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -21,7 +23,12 @@ import org.springframework.web.reactive.function.server.ServerResponse;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -44,13 +51,18 @@ public class ChatRouter {
     private final AgentLoop agentLoop;
     private final SseEventHub sseEventHub;
     private final WorkspaceResolver workspaceResolver;
+    private final SessionFileSpaceManager fileSpaceManager;
+    private final VisionClient visionClient;
 
     public ChatRouter(HttpChannel httpChannel, AgentLoop agentLoop, SseEventHub sseEventHub,
-                      WorkspaceResolver workspaceResolver) {
+                      WorkspaceResolver workspaceResolver, SessionFileSpaceManager fileSpaceManager,
+                      VisionClient visionClient) {
         this.httpChannel = httpChannel;
         this.agentLoop = agentLoop;
         this.sseEventHub = sseEventHub;
         this.workspaceResolver = workspaceResolver;
+        this.fileSpaceManager = fileSpaceManager;
+        this.visionClient = visionClient;
     }
 
     @Bean
@@ -82,8 +94,9 @@ public class ChatRouter {
                     log.info("收到消息: sessionId={}, mode={}, workspace={}, message={}",
                             sessionId, mode.value(), workspace, cr.message());
 
+                    var metadata = buildMetadata(sessionId, mode, workspace, cr);
                     var outbound = httpChannel.submitAndAwait(messageId, sessionId, userId,
-                            cr.message(), RESPONSE_TIMEOUT, Map.of("mode", mode.value(), "workspace", workspace));
+                            cr.message(), RESPONSE_TIMEOUT, metadata);
                     return Map.<String, Object>of(
                             "session_id", outbound.sessionId(),
                             "reply", outbound.content()
@@ -105,12 +118,16 @@ public class ChatRouter {
                     log.info("收到流式消息: sessionId={}, mode={}, workspace={}, message={}",
                             sessionId, mode.value(), workspace, cr.message());
 
-                    var events = agentLoop.runStreaming(sessionKey, sessionId, cr.message(), userId,
-                                    Map.of("mode", mode.value(), "workspace", workspace))
-                            .map(this::toServerSentEvent);
-                    return ServerResponse.ok()
-                            .contentType(MediaType.TEXT_EVENT_STREAM)
-                            .body(events, ServerSentEvent.class);
+                    return Mono.fromCallable(() -> buildMetadata(sessionId, mode, workspace, cr))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .flatMap(metadata -> {
+                                var events = agentLoop.runStreaming(sessionKey, sessionId, cr.message(), userId,
+                                                metadata)
+                                        .map(this::toServerSentEvent);
+                                return ServerResponse.ok()
+                                        .contentType(MediaType.TEXT_EVENT_STREAM)
+                                        .body(events, ServerSentEvent.class);
+                            });
                 });
     }
 
@@ -144,6 +161,66 @@ public class ChatRouter {
             return String.valueOf(authUser);
         }
         return fallback != null ? fallback : "anonymous";
+    }
+
+    private Map<String, Object> buildMetadata(String sessionId, RunMode mode, String workspace, ChatRequest request) {
+        var metadata = new LinkedHashMap<String, Object>();
+        metadata.put("mode", mode.value());
+        metadata.put("workspace", workspace);
+        metadata.put("display_message", request.message() != null ? request.message() : "");
+        var images = imageAttachments(request);
+        if (images.isEmpty()) {
+            return metadata;
+        }
+        if (!visionClient.enabled()) {
+            metadata.put("vision_disabled", true);
+            return metadata;
+        }
+        metadata.put("vision_image_urls", imageDataUris(sessionId, images));
+        metadata.put("attachment_count", images.size());
+        return metadata;
+    }
+
+    private List<ChatAttachment> imageAttachments(ChatRequest request) {
+        List<ChatAttachment> attachments = request.attachments() != null ? request.attachments() : List.of();
+        var images = new ArrayList<ChatAttachment>();
+        for (ChatAttachment attachment : attachments) {
+            if (attachment != null && isImage(attachment)) {
+                images.add(attachment);
+            }
+        }
+        return images;
+    }
+
+    private List<String> imageDataUris(String sessionId, List<ChatAttachment> attachments) {
+        var urls = new ArrayList<String>();
+        for (ChatAttachment attachment : attachments) {
+            try {
+                Path path = trustedUploadPath(sessionId, attachment);
+                byte[] bytes = Files.readAllBytes(path);
+                String mediaType = attachment.contentType() != null && !attachment.contentType().isBlank()
+                        ? attachment.contentType()
+                        : "image/png";
+                urls.add("data:" + mediaType + ";base64," + Base64.getEncoder().encodeToString(bytes));
+            } catch (Exception e) {
+                throw new IllegalArgumentException("读取图片附件失败: " + e.getMessage(), e);
+            }
+        }
+        return urls;
+    }
+
+    private Path trustedUploadPath(String sessionId, ChatAttachment attachment) {
+        var uploads = fileSpaceManager.ensure(sessionId).uploads().toAbsolutePath().normalize();
+        Path path = Path.of(attachment.path() != null ? attachment.path() : "").toAbsolutePath().normalize();
+        if (!path.startsWith(uploads)) {
+            throw new IllegalArgumentException("附件不属于当前会话 uploads 目录");
+        }
+        return path;
+    }
+
+    private boolean isImage(ChatAttachment attachment) {
+        String contentType = attachment.contentType();
+        return contentType != null && contentType.startsWith("image/");
     }
 
     /**
