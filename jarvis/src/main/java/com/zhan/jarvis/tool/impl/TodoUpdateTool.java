@@ -30,7 +30,7 @@ public class TodoUpdateTool implements McpTool {
 
     @Override
     public String description() {
-        return "维护当前复杂任务的 Todo 列表。开始复杂任务、切换步骤、完成步骤或失败时调用；普通问答不要调用。";
+        return "维护当前复杂任务的 Todo 列表。复杂、多步骤或需要子 Agent 协作时调用；普通问答不要调用。";
     }
 
     @Override
@@ -41,7 +41,7 @@ public class TodoUpdateTool implements McpTool {
                 .put("type", "array")
                 .put("minItems", 1)
                 .put("maxItems", 20)
-                .put("description", "完整 Todo 列表快照。每次更新都传入当前全部计划项。");
+                .put("description", "完整 Todo 列表快照。每次更新都传入当前全部计划项，可新增、删除或调整顺序。");
         var item = items.putObject("items").put("type", "object");
         var itemProps = item.putObject("properties");
         itemProps.putObject("id")
@@ -52,7 +52,7 @@ public class TodoUpdateTool implements McpTool {
                 .put("description", "简短任务内容，不超过一句话。");
         var status = itemProps.putObject("status")
                 .put("type", "string")
-                .put("description", "任务状态。同一时间最多一个 in_progress。");
+                .put("description", "任务状态。开始执行设为 in_progress，确认完成才设为 completed，受阻或失败设为 failed。");
         status.putArray("enum").add("pending").add("in_progress").add("completed").add("failed");
         itemProps.putObject("order")
                 .put("type", "integer")

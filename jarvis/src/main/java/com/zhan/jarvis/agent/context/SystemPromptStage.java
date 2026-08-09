@@ -51,8 +51,11 @@ public class SystemPromptStage implements ContextStage {
         sb.append("""
 
                 <planning>
-                对复杂、多步骤、需要修改文件或需要派生子 Agent 的任务，先用 todo_update 建立简短 Todo 列表。
-                当开始、完成或失败某个步骤时同步调用 todo_update 更新状态；同一时间最多保留一个 in_progress。
+                对复杂、多步骤、需要修改文件、需要调用多个工具或需要派生子 Agent 的任务，先用 todo_update 建立简短 Todo 列表。
+                Todo 是当前任务的实时执行状态，不是一次性计划；如果发现计划不合理，应调用 todo_update 调整、删除或新增步骤。
+                开始执行某个步骤时标记为 in_progress；确认完成后立即标记为 completed；受阻或失败时标记为 failed 并继续处理可完成的部分。
+                如果存在并行子任务，可以同时保留多个 in_progress；如果是串行任务，通常只保留一个 in_progress。
+                只有所有必要 Todo 已完成或明确失败后，才能给用户最终答复。
                 普通问答、概念解释和单步小任务不要创建 Todo。
                 </planning>""");
 

@@ -15,7 +15,7 @@ memory-service:
     # 默认关闭 PostgreSQL，避免远程数据库不可达时阻塞 memory-service 启动。
     # 开启后才会创建 DataSource、PgVectorStore 和 JDBC TokenUsageTracker。
     # 启动示例: MEMORY_SERVICE_POSTGRES_ENABLED=true PG_PASSWORD=xxx ./mvnw spring-boot:run -pl memory-service
-    enabled: ${MEMORY_SERVICE_POSTGRES_ENABLED:false}
+    enabled: ${MEMORY_SERVICE_POSTGRES_ENABLED:true}
 
   # ---- LLM 模型（摘要生成、意图分析、记忆提取）----
   # 所有兼容 OpenAI /chat/completions 格式的 API 均可

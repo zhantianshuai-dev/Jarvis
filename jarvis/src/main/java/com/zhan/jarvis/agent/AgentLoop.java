@@ -31,6 +31,7 @@ import com.zhan.jarvis.permission.PendingToolPermission;
 import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionManager;
 import com.zhan.jarvis.todo.TodoManager;
+import com.zhan.jarvis.todo.TodoStatus;
 import com.zhan.jarvis.tool.ToolContext;
 import com.zhan.jarvis.tool.ToolPayloadSanitizer;
 import com.zhan.jarvis.tool.ToolRegistry;
@@ -64,6 +65,8 @@ public class AgentLoop {
     private static final int MAX_VISIBLE_TOOL_RESULT_CHARS = 8_000;
     private static final int MAX_VISIBLE_TOOL_FILES = 30;
     private static final long TOOL_EXECUTION_TIMEOUT_SECONDS = 330;
+    private static final int MAX_TODO_COMPLETION_REMINDERS = 2;
+    private static final String META_TODO_COMPLETION_REMINDERS = "todo_completion_reminders";
 
     private final JarvisConfig.AgentConfig agentConfig;
     private final AgentLLMProvider llmProvider;
@@ -486,6 +489,9 @@ public class AgentLoop {
             }
 
             String finalReply = response.content() != null ? response.content() : "（无回复内容）";
+            if (shouldContinueForIncompleteTodos(state, iteration)) {
+                continue;
+            }
             var outcome = finishFinal(state, iteration, finalReply,
                     response.finishReason() != null ? response.finishReason() : "");
             observer.onDone(outcome);
@@ -496,6 +502,67 @@ public class AgentLoop {
         var outcome = finishMaxIterations(state, fallback);
         observer.onDone(outcome);
         return outcome;
+    }
+
+    private boolean shouldContinueForIncompleteTodos(LoopState state, int iteration) {
+        if (state.runMode() == RunMode.CHAT || todoManager == null) {
+            return false;
+        }
+        var todoState = todoManager.load(state.sessionId());
+        if (todoState.items().isEmpty()) {
+            return false;
+        }
+        if (hasText(todoState.runId()) && !Objects.equals(todoState.runId(), state.runId())) {
+            return false;
+        }
+        var incomplete = todoState.items().stream()
+                .filter(item -> item.status() == TodoStatus.PENDING || item.status() == TodoStatus.IN_PROGRESS)
+                .toList();
+        if (incomplete.isEmpty()) {
+            return false;
+        }
+
+        int reminderCount = intMetadata(state.outputMetadata().get(META_TODO_COMPLETION_REMINDERS));
+        if (reminderCount >= MAX_TODO_COMPLETION_REMINDERS) {
+            log.warn("[AgentLoop] Todo 仍未完成，但已达到提醒上限: sessionId={}, runId={}, incomplete={}",
+                    state.sessionId(), state.runId(), incomplete.size());
+            recordEvent(state, "todo.completion_reminder.max", "", Map.of(
+                    "iteration", iteration,
+                    "incomplete_count", incomplete.size(),
+                    "max_reminders", MAX_TODO_COMPLETION_REMINDERS
+            ));
+            return false;
+        }
+
+        state.outputMetadata().put(META_TODO_COMPLETION_REMINDERS, reminderCount + 1);
+        String reminder = buildTodoCompletionReminder(incomplete);
+        state.messages().add(Message.system(reminder));
+        log.info("[AgentLoop] Todo 未完成，阻止最终回复并继续执行: sessionId={}, runId={}, incomplete={}, reminder={}/{}",
+                state.sessionId(), state.runId(), incomplete.size(), reminderCount + 1, MAX_TODO_COMPLETION_REMINDERS);
+        recordEvent(state, "todo.completion_reminder", reminder, Map.of(
+                "iteration", iteration,
+                "incomplete_count", incomplete.size(),
+                "reminder_count", reminderCount + 1
+        ));
+        return true;
+    }
+
+    private String buildTodoCompletionReminder(List<com.zhan.jarvis.todo.TodoItem> incomplete) {
+        var sb = new StringBuilder();
+        sb.append("""
+                <system_reminder>
+                当前 Todo 仍有未完成项。不要直接给最终答复；请继续执行下一个可执行步骤，或调用 todo_update 将已完成、失败或不再需要的步骤更新到准确状态。
+                未完成项：
+                """);
+        for (var item : incomplete) {
+            sb.append("- [")
+                    .append(item.status().value())
+                    .append("] ")
+                    .append(item.content())
+                    .append('\n');
+        }
+        sb.append("</system_reminder>");
+        return sb.toString();
     }
 
     private ChatResponse streamChatResponse(LoopState state, List<ToolDefinition> tools, LoopObserver observer, int iteration) {
@@ -1154,6 +1221,20 @@ public class AgentLoop {
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private static int intMetadata(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Integer.parseInt(text);
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
     }
 
 }

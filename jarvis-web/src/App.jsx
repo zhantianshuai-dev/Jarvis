@@ -29,6 +29,7 @@ import {
   Settings,
   Sparkles,
   Palette,
+  Terminal,
   Trash2,
   UserRound,
   X,
@@ -161,8 +162,25 @@ function extractToolConfirmation(content, data = {}) {
     confirmId,
     tool: data.tool || content.match(/工具:\s*([^\n]+)/)?.[1]?.trim() || 'tool',
     action: data.action || content.match(/操作:\s*([^\n]+)/)?.[1]?.trim() || 'confirm',
+    command: formatConfirmationCommand(data.command || content.match(/命令:\s*([^\n]+)/)?.[1]?.trim() || ''),
     status: 'pending',
   };
+}
+
+function formatConfirmationCommand(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('[')) {
+    try {
+      const parts = JSON.parse(raw);
+      if (Array.isArray(parts) && parts.every((part) => typeof part === 'string')) {
+        return parts.join(' ');
+      }
+    } catch {
+      // 非 JSON 命令以可读文本展示。
+    }
+  }
+  return raw.replace(/\s+/g, ' ').slice(0, 300);
 }
 
 function confirmationCopy(confirmation) {
@@ -196,32 +214,50 @@ function confirmationCopy(confirmation) {
   };
 }
 
-function ToolConfirmationCard({ confirmation, chatBusy, onConfirm }) {
+function ToolConfirmationDialog({ confirmation, chatBusy, onConfirm, onReject }) {
   const copy = confirmationCopy(confirmation);
   const isRunning = confirmation.status === 'running';
-  const isConfirmed = confirmation.status === 'confirmed';
+  const rejectIfPending = () => {
+    if (!isRunning) onReject();
+  };
   return (
-    <section className={`tool-confirm-panel ${isConfirmed ? 'confirmed' : ''}`} aria-label="工具操作确认">
-      <div className="tool-confirm-head">
-        <span className="tool-confirm-icon">{isConfirmed ? <Check size={17} /> : <Lock size={17} />}</span>
-        <div>
-          <span className="tool-confirm-label">{isConfirmed ? '已确认' : copy.label}</span>
-          <h3>{isConfirmed ? '操作已执行' : copy.title}</h3>
-        </div>
-      </div>
-      <p className="tool-confirm-description">
-        {isConfirmed ? '已收到你的确认，正在继续处理任务。' : copy.description}
-      </p>
-      {confirmation.error && <div className="tool-confirm-error">{confirmation.error}</div>}
-      <button
-        className="tool-confirm-button"
-        type="button"
-        disabled={confirmation.status !== 'pending' || chatBusy}
-        onClick={onConfirm}
+    <div className="tool-confirm-backdrop" role="presentation" onMouseDown={rejectIfPending}>
+      <section
+        className="tool-confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="tool-confirm-title"
+        aria-describedby="tool-confirm-description"
+        onMouseDown={(event) => event.stopPropagation()}
       >
-        {isRunning ? '正在执行…' : isConfirmed ? '已执行' : '确认并执行'}
-      </button>
-    </section>
+        <div className="tool-confirm-dialog-type">
+          <Terminal size={22} />
+          <span>{copy.label}</span>
+        </div>
+        <h2 id="tool-confirm-title">{isRunning ? 'Jarvis 正在执行此操作' : '允许 Jarvis 执行此操作？'}</h2>
+        <p id="tool-confirm-description">{copy.description}</p>
+        {confirmation.command && <code className="tool-confirm-dialog-command">{confirmation.command}</code>}
+        {confirmation.error && <div className="tool-confirm-error">{confirmation.error}</div>}
+        <div className="tool-confirm-dialog-actions">
+          <button className="tool-confirm-reject" type="button" disabled={isRunning} onClick={rejectIfPending}>
+            拒绝 <kbd>Esc</kbd>
+          </button>
+          <button className="tool-confirm-allow" type="button" disabled={isRunning || chatBusy} onClick={onConfirm}>
+            {isRunning ? '正在执行…' : '允许一次'} <span className="tool-confirm-enter">↵</span><ChevronDown size={18} />
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ToolConfirmationStatus({ confirmation }) {
+  const rejected = confirmation.status === 'rejected';
+  return (
+    <div className={`tool-confirm-status ${rejected ? 'rejected' : ''}`}>
+      <Check size={15} />
+      {rejected ? '已拒绝执行此操作' : '已允许执行此操作'}
+    </div>
   );
 }
 
@@ -570,6 +606,10 @@ export default function App() {
       return item.label.toLowerCase().includes(query) || item.path.toLowerCase().includes(query);
     });
   }, [workspaceQuery, workspaces]);
+  const activeToolConfirmation = useMemo(
+    () => messages.find((message) => ['pending', 'running'].includes(message.confirmation?.status)),
+    [messages],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -697,6 +737,24 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('jarvis.theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!activeToolConfirmation?.confirmation || activeToolConfirmation.confirmation.status !== 'pending') {
+      return undefined;
+    }
+    function handleConfirmationShortcut(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        rejectToolConfirmation(activeToolConfirmation.id);
+      }
+      if (event.key === 'Enter' && !event.repeat && !chatBusy) {
+        event.preventDefault();
+        handleToolConfirm(activeToolConfirmation.id, activeToolConfirmation.confirmation.confirmId);
+      }
+    }
+    document.addEventListener('keydown', handleConfirmationShortcut);
+    return () => document.removeEventListener('keydown', handleConfirmationShortcut);
+  }, [activeToolConfirmation, chatBusy]);
 
   useEffect(() => {
     if (!conversationPendingDelete) return undefined;
@@ -1010,6 +1068,16 @@ export default function App() {
         ),
       );
     }
+  }
+
+  function rejectToolConfirmation(messageId) {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId && message.confirmation
+          ? { ...message, confirmation: { ...message.confirmation, status: 'rejected', error: '' } }
+          : message,
+      ),
+    );
   }
 
   function upsertSubagentStatus(data) {
@@ -1486,14 +1554,9 @@ export default function App() {
                           )}
                         </div>
                       ) : message.confirmation ? (
-                        <>
-                          <ToolConfirmationCard
-                            confirmation={message.confirmation}
-                            chatBusy={chatBusy}
-                            onConfirm={() => handleToolConfirm(message.id, message.confirmation.confirmId)}
-                          />
-                          <ContextUsageLine usage={message.tokenUsage} />
-                        </>
+                        message.confirmation.status === 'confirmed' || message.confirmation.status === 'rejected'
+                          ? <ToolConfirmationStatus confirmation={message.confirmation} />
+                          : null
                       ) : message.content || message.providerEvents?.length ? (
                         <>
                           {message.content ? <MarkdownMessage content={message.content} /> : null}
@@ -1745,6 +1808,15 @@ export default function App() {
             </>
           )}
         </section>
+
+        {activeToolConfirmation?.confirmation && (
+          <ToolConfirmationDialog
+            confirmation={activeToolConfirmation.confirmation}
+            chatBusy={chatBusy}
+            onConfirm={() => handleToolConfirm(activeToolConfirmation.id, activeToolConfirmation.confirmation.confirmId)}
+            onReject={() => rejectToolConfirmation(activeToolConfirmation.id)}
+          />
+        )}
 
         {conversationPendingDelete && (
           <div

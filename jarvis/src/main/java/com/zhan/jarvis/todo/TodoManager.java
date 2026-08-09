@@ -52,7 +52,6 @@ public class TodoManager {
 
         String now = Instant.now().toString();
         var items = new ArrayList<TodoItem>();
-        int inProgressCount = 0;
         for (int i = 0; i < rawItems.size(); i++) {
             Map<String, Object> raw = rawItems.get(i);
             String id = text(raw.get("id"));
@@ -64,9 +63,6 @@ public class TodoManager {
                 throw new IOException("Todo 内容不能为空");
             }
             TodoStatus status = TodoStatus.from(raw.get("status"));
-            if (status == TodoStatus.IN_PROGRESS) {
-                inProgressCount++;
-            }
             int order = intValue(raw.get("order"), i + 1);
             TodoItem old = previousById.get(id);
             items.add(new TodoItem(
@@ -77,10 +73,6 @@ public class TodoManager {
                     old != null && old.createdAt() != null && !old.createdAt().isBlank() ? old.createdAt() : now,
                     now
             ));
-        }
-
-        if (inProgressCount > 1) {
-            throw new IOException("同一时间只能有一个 in_progress Todo");
         }
 
         items.sort(Comparator.comparingInt(TodoItem::order));
