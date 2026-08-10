@@ -1,0 +1,52 @@
+spring:
+  main:
+    web-application-type: none
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration
+
+jarvis:
+  llm:
+    temperature: 0.0
+    max-tokens: ${JARVIS_EVAL_LLM_MAX_TOKENS:1200}
+    log-request-body: false
+  agent:
+    max-iterations: 4
+    workspace: ${JARVIS_EVAL_WORKSPACE:./evals/workspace}
+    workspaces:
+      - id: eval
+        label: Evaluation workspace
+        path: ${JARVIS_EVAL_WORKSPACE:./evals/workspace}
+    context-budget:
+      enabled: true
+      max-input-tokens: 8000
+      max-tool-result-chars: 2000
+      max-context-block-chars: 2000
+      keep-recent-messages: 4
+  auth:
+    enabled: false
+    registration-enabled: false
+  mcp:
+    enabled: false
+    local-tools: true
+    external-servers: []
+  channels:
+    feishu:
+      enabled: false
+  vision:
+    enabled: false
+  sandbox:
+    backend: direct
+  heartbeat:
+    enabled: false
+  cron:
+    enabled: false
+  eval:
+    enabled: true
+    runs-per-scenario: ${JARVIS_EVAL_RUNS_PER_SCENARIO:2}
+    max-total-tokens: ${JARVIS_EVAL_MAX_TOTAL_TOKENS:100000}
+    run-timeout-seconds: ${JARVIS_EVAL_RUN_TIMEOUT_SECONDS:90}
+    report-dir: ${JARVIS_EVAL_REPORT_DIR:./evals/reports}
+    workspace-dir: ${JARVIS_EVAL_WORKSPACE:./evals/workspace}
+    scenarios: ${JARVIS_EVAL_SCENARIOS:}

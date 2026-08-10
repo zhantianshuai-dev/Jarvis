@@ -34,10 +34,17 @@ public class PlannerGate {
         if (config == null || !config.enabled() || mode == RunMode.CHAT) {
             return false;
         }
+        String text = message == null ? "" : message.strip().toLowerCase();
+        // 单次状态查询或单文件读取不应为了生成 Todo 再增加一次模型调用和多轮循环。
+        if (isSingleReadOnlyTask(text)) {
+            return false;
+        }
+        if (containsAny(text, "然后", "并且", "同时", "以及", "最后", "多步骤", "并行", "after", "then")) {
+            return true;
+        }
         if (mode == RunMode.SUPER_AGENT && config.superAgentAlwaysPlan()) {
             return true;
         }
-        String text = message == null ? "" : message.strip().toLowerCase();
         if (text.length() < config.minMessageChars()) {
             return false;
         }
@@ -52,6 +59,22 @@ public class PlannerGate {
             score += 3;
         }
         return score >= config.complexityThreshold();
+    }
+
+    private boolean isSingleReadOnlyTask(String text) {
+        if (text.isBlank() || containsAny(text, "然后", "并且", "同时", "以及", "再", "最后", "先", "多步骤", "并行")) {
+            return false;
+        }
+        String normalized = text
+                .replace("未提交修改", "")
+                .replace("修改概况", "")
+                .replace("修改情况", "");
+        if (containsAny(normalized, "创建", "写入", "编辑", "删除", "提交", "推送", "恢复", "合并", "覆盖",
+                "create", "write", "edit", "delete", "commit", "push", "restore", "merge")) {
+            return false;
+        }
+        return containsAny(normalized, "查看", "读取", "列出", "显示", "查询", "状态", "分支", "diff",
+                "read", "list", "show", "status", "branch");
     }
 
     private int countMatches(String text, List<String> words) {

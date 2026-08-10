@@ -13,6 +13,7 @@ import com.zhan.jarvis.agent.loop.SseLoopObserver;
 import com.zhan.jarvis.agent.loop.ToolCallBuilder;
 import com.zhan.jarvis.agent.loop.ToolResult;
 import com.zhan.jarvis.agent.loop.TokenUsageAccumulator;
+import com.zhan.jarvis.agent.loop.ToolResultStore;
 import com.zhan.jarvis.agent.event.RunEvent;
 import com.zhan.jarvis.agent.event.RunEventStore;
 import com.zhan.jarvis.agent.middleware.AgentMiddlewareChain;
@@ -62,7 +63,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
-    private static final int MAX_VISIBLE_TOOL_RESULT_CHARS = 8_000;
+    private static final int DEFAULT_MAX_VISIBLE_TOOL_RESULT_CHARS = 2_000;
     private static final int MAX_VISIBLE_TOOL_FILES = 30;
     private static final long TOOL_EXECUTION_TIMEOUT_SECONDS = 330;
     private static final int MAX_TODO_COMPLETION_REMINDERS = 2;
@@ -84,6 +85,7 @@ public class AgentLoop {
     private final Planner planner;
     private final PlanManager planManager;
     private final TodoManager todoManager;
+    private final ToolResultStore toolResultStore;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -153,6 +155,19 @@ public class AgentLoop {
                      WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
                      RunEventStore runEventStore, ArtifactManager artifactManager,
                      Planner planner, PlanManager planManager, TodoManager todoManager) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, runEventStore, artifactManager,
+                planner, planManager, todoManager, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore, ArtifactManager artifactManager,
+                     Planner planner, PlanManager planManager, TodoManager todoManager,
+                     ToolResultStore toolResultStore) {
         this.agentConfig = agentConfig;
         this.llmProvider = llmProvider;
         this.toolRegistry = toolRegistry;
@@ -169,6 +184,7 @@ public class AgentLoop {
         this.planner = planner;
         this.planManager = planManager;
         this.todoManager = todoManager;
+        this.toolResultStore = toolResultStore;
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -359,8 +375,10 @@ public class AgentLoop {
         if (planner == null || planManager == null || todoManager == null) {
             return;
         }
-        ExecutionPlan plan = planner.plan(state.runId(), state.sessionId(), state.runMode(),
+        var planning = planner.planWithUsage(state.runId(), state.sessionId(), state.runMode(),
                 userMessage, state.workspace());
+        state.tokenUsage().add(planning.usage());
+        ExecutionPlan plan = planning.plan();
         if (plan == null || !plan.hasSteps()) {
             return;
         }
@@ -407,6 +425,13 @@ public class AgentLoop {
     private LoopOutcome runLoop(LoopState state, LoopObserver observer) {
         int iteration = state.startIteration();
         int maxIterations = state.runMode().maxIterations(agentConfig.maxIterations());
+        // 评测场景独立设置上限，防止 Super Agent 的生产轮数策略放大基准成本。
+        if (Boolean.parseBoolean(String.valueOf(state.metadata().getOrDefault("evaluation", false)))) {
+            int evaluationLimit = intMetadata(state.metadata().get("evaluation_max_iterations"));
+            if (evaluationLimit > 0) {
+                maxIterations = Math.min(maxIterations, evaluationLimit);
+            }
+        }
         recordEvent(state, "run.started", "", Map.of(
                 "mode", state.runMode().value(),
                 "workspace", state.workspace(),
@@ -742,10 +767,11 @@ public class AgentLoop {
             if (pending != null && Objects.equals(result.toolCallId(), pending.result().toolCallId())) {
                 continue;
             }
-            String visibleResult = llmVisibleToolResult(result);
+            ToolResultPresentation presentation = presentToolResult(state, result);
+            String visibleResult = presentation.content();
             state.messages().add(Message.tool(result.toolCallId(), visibleResult));
             sessionManager.addMessage(state.sessionId(), "tool", visibleResult,
-                    toolResultMetadata(iteration, result, visibleResult));
+                    toolResultMetadata(iteration, result, visibleResult, presentation));
             registerArtifactFromToolResult(state, result, visibleResult);
             observer.onToolResult(state, iteration,
                     new ToolResult(result.toolCallId(), result.toolName(),
@@ -757,7 +783,9 @@ public class AgentLoop {
                     "tool_name", result.toolName(),
                     "raw_result_length", result.result() != null ? result.result().length() : 0,
                     "visible_result_length", visibleResult != null ? visibleResult.length() : 0,
-                    "compressed", result.result() != null && !Objects.equals(result.result(), visibleResult)
+                    "compressed", result.result() != null && !Objects.equals(result.result(), visibleResult),
+                    "externalized", presentation.externalized(),
+                    "result_ref", presentation.virtualPath()
             ));
         }
     }
@@ -1000,6 +1028,34 @@ public class AgentLoop {
         return metadata;
     }
 
+    private ToolResultPresentation presentToolResult(LoopState state, ToolResult result) {
+        if (result == null || result.result() == null) {
+            return new ToolResultPresentation("", false, "");
+        }
+        String raw = result.result();
+        int maxVisibleChars = maxVisibleToolResultChars();
+        if (raw.length() <= maxVisibleChars || toolResultStore == null) {
+            return new ToolResultPresentation(llmVisibleToolResult(result), false, "");
+        }
+        try {
+            var stored = toolResultStore.save(state.sessionId(), result.toolName(), result.toolCallId(), raw);
+            String compact = "git".equals(result.toolName()) ? compressGitToolResult(result) : null;
+            String preview = compact != null ? compactPreview(compact, maxVisibleChars) : compactPreview(raw, maxVisibleChars);
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("tool", result.toolName());
+            payload.put("summary", "完整工具结果已外置。需要细节时请使用 read_file，并指定 start_line/end_line 分页读取。");
+            payload.put("result_ref", stored.virtualPath());
+            payload.put("result_preview", preview);
+            payload.put("original_chars", stored.chars());
+            payload.put("truncated", true);
+            payload.put("externalized", true);
+            return new ToolResultPresentation(toJson(payload), true, stored.virtualPath());
+        } catch (Exception e) {
+            log.warn("[AgentLoop] 外置工具结果失败，回退到截断: tool={}, error={}", result.toolName(), e.getMessage());
+            return new ToolResultPresentation(llmVisibleToolResult(result), false, "");
+        }
+    }
+
     private String llmVisibleToolResult(ToolResult result) {
         if (result == null || result.result() == null) {
             return "";
@@ -1010,16 +1066,41 @@ public class AgentLoop {
                 return compressed;
             }
         }
-        if (result.result().length() <= MAX_VISIBLE_TOOL_RESULT_CHARS) {
+        int maxVisibleChars = maxVisibleToolResultChars();
+        if (result.result().length() <= maxVisibleChars) {
             return result.result();
         }
         return toJson(Map.of(
                 "tool", result.toolName(),
                 "summary", "工具结果过长，已压缩。需要细节时请针对具体文件或范围重新调用工具。",
-                "result_preview", result.result().substring(0, MAX_VISIBLE_TOOL_RESULT_CHARS),
+                "result_preview", compactPreview(result.result(), maxVisibleChars),
                 "original_chars", result.result().length(),
                 "truncated", true
         ));
+    }
+
+    private String compactPreview(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value == null ? "" : value;
+        }
+        String marker = "\n... [中间内容已省略] ...\n";
+        int contentChars = Math.max(2, maxChars - marker.length());
+        int headChars = Math.max(1, (int) (contentChars * 0.65));
+        int tailChars = Math.max(1, contentChars - headChars);
+        return value.substring(0, headChars)
+                + marker
+                + value.substring(value.length() - tailChars);
+    }
+
+    /**
+     * 单条工具结果进入模型上下文的统一阈值。
+     * 大结果外置机制接入后，该阈值将作为外置触发线；当前版本先用于截断保护。
+     */
+    private int maxVisibleToolResultChars() {
+        var budget = agentConfig.contextBudget();
+        return budget != null && budget.maxToolResultChars() > 0
+                ? budget.maxToolResultChars()
+                : DEFAULT_MAX_VISIBLE_TOOL_RESULT_CHARS;
     }
 
     private String compressGitToolResult(ToolResult result) {
@@ -1039,7 +1120,8 @@ public class AgentLoop {
             payload.put("tool", "git.diff");
             payload.put("summary", summary);
             payload.put("files", files);
-            payload.put("truncated", rawTruncated || output.length() > MAX_VISIBLE_TOOL_RESULT_CHARS
+            int maxVisibleChars = maxVisibleToolResultChars();
+            payload.put("truncated", rawTruncated || output.length() > maxVisibleChars
                     || files.size() >= MAX_VISIBLE_TOOL_FILES);
             payload.put("exit_code", exitCode);
             payload.put("command", root.path("command").toString());
@@ -1102,7 +1184,8 @@ public class AgentLoop {
         }
     }
 
-    private Map<String, Object> toolResultMetadata(int iteration, ToolResult result, String visibleResult) {
+    private Map<String, Object> toolResultMetadata(int iteration, ToolResult result, String visibleResult,
+                                                    ToolResultPresentation presentation) {
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("source", "Jarvis");
         metadata.put("trace", true);
@@ -1116,8 +1199,14 @@ public class AgentLoop {
         metadata.put("raw_result_length", result.result() != null ? result.result().length() : 0);
         metadata.put("visible_result_length", visibleResult != null ? visibleResult.length() : 0);
         metadata.put("compressed", result.result() != null && !Objects.equals(result.result(), visibleResult));
+        metadata.put("externalized", presentation != null && presentation.externalized());
+        if (presentation != null && hasText(presentation.virtualPath())) {
+            metadata.put("result_ref", presentation.virtualPath());
+        }
         return metadata;
     }
+
+    private record ToolResultPresentation(String content, boolean externalized, String virtualPath) {}
 
     private Map<String, Object> mergedMeta(LoopState state, Map<String, Object> base) {
         var metadata = new LinkedHashMap<String, Object>(base);

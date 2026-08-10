@@ -5,7 +5,7 @@ import com.zhan.jarvis.agent.context.ContextBuildRequest;
 import com.zhan.jarvis.agent.context.ContextPipeline;
 import com.zhan.jarvis.agent.context.CurrentMessageStage;
 import com.zhan.jarvis.agent.context.DynamicReminderStage;
-import com.zhan.jarvis.agent.context.MemoryRetrievalStage;
+import com.zhan.jarvis.agent.context.SessionMemorySnapshotStage;
 import com.zhan.jarvis.agent.context.SessionHistoryStage;
 import com.zhan.jarvis.agent.context.SkillInjectionStage;
 import com.zhan.jarvis.agent.context.SystemPromptStage;
@@ -40,7 +40,7 @@ public class ContextBuilder {
                 new SystemPromptStage(agentConfig, toolExposureStage, skillInjectionStage),
                 new DynamicReminderStage(),
                 new SessionHistoryStage(memoryClient),
-                new MemoryRetrievalStage(memoryClient),
+                new SessionMemorySnapshotStage(memoryClient),
                 new CurrentMessageStage()
         ));
     }

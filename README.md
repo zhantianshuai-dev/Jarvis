@@ -179,6 +179,20 @@ jarvis:
 cd jarvis-web && npm run build
 ```
 
+## Agent 评测
+
+Jarvis 内置一套低成本端到端评测：12 个固定任务各运行 2 次，覆盖运行模式、文件与 Git 工具、人工确认、Planner/Todo 和 Token 治理。评测使用独立工作区和内存会话替身，不会连接 memory-service、飞书、外部 MCP 或远程 Git。
+
+```bash
+./mvnw spring-boot:run -pl jarvis \
+  -Dspring-boot.run.profiles=local,eval \
+  -Dspring-boot.run.main-class=com.zhan.jarvis.eval.JarvisEvaluationApplication
+```
+
+可用 `JARVIS_EVAL_SCENARIOS=agent-path-boundary,agent-git-status-deferred` 只运行指定场景，便于低成本复测。
+
+报告输出到 `jarvis/evals/reports/<run-id>/`，包含 `summary.md`、`summary.json` 和每个案例的精简轨迹。可通过 `JARVIS_EVAL_RUNS_PER_SCENARIO`、`JARVIS_EVAL_MAX_TOTAL_TOKENS`、`JARVIS_EVAL_LLM_MAX_TOKENS` 调整运行次数和预算。
+
 ## 安全提示
 
 - 不要提交 `application-local.yaml`、`.env`、API Key、Token、会话数据或本地运行日志。

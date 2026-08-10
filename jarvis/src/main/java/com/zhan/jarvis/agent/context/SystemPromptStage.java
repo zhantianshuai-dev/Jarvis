@@ -20,11 +20,32 @@ public class SystemPromptStage implements ContextStage {
 
     @Override
     public void apply(ContextBuildRequest request, ContextBuildState state) {
-        state.messages().add(Message.system(buildSystemPrompt(request)));
+        state.messages().add(Message.system(buildStaticSystemPrompt(request.runMode())));
+        if (request.runMode() == RunMode.CHAT) {
+            return;
+        }
+
+        String toolSummary = toolExposureStage.buildToolSummary(request);
+        String deferredTools = toolExposureStage.buildDeferredToolsSection(request);
+        if (!toolSummary.isBlank() || !deferredTools.isBlank()) {
+            state.messages().add(Message.system("<runtime_tool_catalog>\n"
+                    + toolSummary
+                    + (toolSummary.isBlank() || deferredTools.isBlank() ? "" : "\n\n")
+                    + deferredTools
+                    + "\n</runtime_tool_catalog>"));
+        }
+
+        String skillsSection = skillInjectionStage.buildSkillsSection();
+        if (!skillsSection.isBlank()) {
+            state.messages().add(Message.system("<runtime_skills>\n" + skillsSection + "\n</runtime_skills>"));
+        }
     }
 
-    private String buildSystemPrompt(ContextBuildRequest request) {
-        RunMode mode = request.runMode();
+    /**
+     * 仅包含运行模式和固定规则，刻意不混入当前请求、工作目录、工具选择结果或检索记忆。
+     * 这样同一会话多次调用模型时可以复用稳定前缀的缓存。
+     */
+    private String buildStaticSystemPrompt(RunMode mode) {
 
         if (mode == RunMode.CHAT) {
             return """
@@ -46,7 +67,7 @@ public class SystemPromptStage implements ContextStage {
                 .replace("{workspace}", "")
                 .replace("{name}", agentConfig.name())
                 .replace("{now}", "")
-                .replace("{tool_summary}", toolExposureStage.buildToolSummary(request)));
+                .replace("{tool_summary}", ""));
 
         sb.append("""
 
@@ -58,16 +79,6 @@ public class SystemPromptStage implements ContextStage {
                 只有所有必要 Todo 已完成或明确失败后，才能给用户最终答复。
                 普通问答、概念解释和单步小任务不要创建 Todo。
                 </planning>""");
-
-        String deferredToolsSection = toolExposureStage.buildDeferredToolsSection(request);
-        if (!deferredToolsSection.isBlank()) {
-            sb.append("\n\n").append(deferredToolsSection);
-        }
-
-        String skillsSection = skillInjectionStage.buildSkillsSection();
-        if (!skillsSection.isBlank()) {
-            sb.append("\n\n").append(skillsSection);
-        }
 
         return sb.toString();
     }

@@ -42,7 +42,7 @@ jarvis:
     context-budget:
       enabled: ${JARVIS_CONTEXT_BUDGET_ENABLED:true}
       max-input-tokens: ${JARVIS_CONTEXT_MAX_INPUT_TOKENS:16000}
-      max-tool-result-chars: ${JARVIS_CONTEXT_MAX_TOOL_RESULT_CHARS:1200}
+      max-tool-result-chars: ${JARVIS_CONTEXT_MAX_TOOL_RESULT_CHARS:2000}
       max-context-block-chars: ${JARVIS_CONTEXT_MAX_CONTEXT_BLOCK_CHARS:4000}
       keep-recent-messages: ${JARVIS_CONTEXT_KEEP_RECENT_MESSAGES:12}
 

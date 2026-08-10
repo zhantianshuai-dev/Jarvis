@@ -1,6 +1,7 @@
 # macOS / IDE
 .DS_Store
 .idea/
+.idea_backup/
 *.iml
 
 # Java / Maven
@@ -28,6 +29,8 @@ build/
 # Runtime data
 data/
 sessions/
+jarvis/evals/reports/
+jarvis/evals/workspace/
 **/workspace/*
 !workspace/
 !workspace/skills/
@@ -58,3 +61,7 @@ DESIGN.md
 
 # Local reference projects
 /Open*/
+
+# Jarvis evaluation runtime artifacts (keep after generic workspace exceptions)
+/jarvis/evals/reports/
+/jarvis/evals/workspace/

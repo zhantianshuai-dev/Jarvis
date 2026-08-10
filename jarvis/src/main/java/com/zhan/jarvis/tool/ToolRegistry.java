@@ -107,7 +107,8 @@ public class ToolRegistry {
                 hidden.add(tool);
                 continue;
             }
-            if (tool.deferred() && !active.contains(tool.name())) {
+            // Super Agent 明确选择了完整能力集，延迟工具直接暴露；Agent 模式仍需 tool_search 按需加载。
+            if (tool.deferred() && runMode != RunMode.SUPER_AGENT && !active.contains(tool.name())) {
                 hidden.add(tool);
                 continue;
             }

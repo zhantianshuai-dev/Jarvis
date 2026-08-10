@@ -33,4 +33,17 @@ class SessionMessageVisibilityFilterTest {
         assertThat(filter.visibleForDisplay(subagentStatus)).isTrue();
         assertThat(filter.visibleForRuntimeContext(subagentStatus)).isFalse();
     }
+
+    @Test
+    void runtimeOnlyMemorySnapshotIsHiddenFromDisplayButKeptForAgentContext() {
+        var snapshot = Message.of("system", "<context kind=\"memory_snapshot\">偏好 Java</context>", null, Map.of(
+                "hidden", true,
+                "display_event", false,
+                "runtime_context", true,
+                "memory_snapshot", true
+        ));
+
+        assertThat(filter.visibleForDisplay(snapshot)).isFalse();
+        assertThat(filter.visibleForRuntimeContext(snapshot)).isTrue();
+    }
 }

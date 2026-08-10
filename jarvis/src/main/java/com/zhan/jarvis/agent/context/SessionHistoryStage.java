@@ -20,6 +20,7 @@ public class SessionHistoryStage implements ContextStage {
     public void apply(ContextBuildRequest request, ContextBuildState state) {
         try {
             var ctx = memoryClient.getSessionContext(request.session().id(), request.historyRounds() * 2);
+            state.sessionMessageCount(ctx.messageCount());
 
             String wm = ctx.workingMemory();
             if (wm != null && !wm.isBlank()) {

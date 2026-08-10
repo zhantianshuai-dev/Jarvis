@@ -29,10 +29,14 @@ public class SessionMessageVisibilityFilter {
     }
 
     public boolean visibleForRuntimeContext(Message message) {
+        Map<String, Object> metadata = message == null || message.metadata() == null ? Map.of() : message.metadata();
+        // 会话首轮记忆快照不展示给用户，也不参与记忆抽取；但后续 Agent 运行需要复用它。
+        if ("system".equals(message != null ? message.role() : "") && truthy(metadata.get("runtime_context"))) {
+            return !textOf(message).isBlank();
+        }
         if (!visibleForDisplay(message)) {
             return false;
         }
-        Map<String, Object> metadata = message.metadata() == null ? Map.of() : message.metadata();
         return !truthy(metadata.get("subagent_status"));
     }
 

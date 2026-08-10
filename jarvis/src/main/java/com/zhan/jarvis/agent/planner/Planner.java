@@ -3,6 +3,7 @@ package com.zhan.jarvis.agent.planner;
 import com.zhan.jarvis.agent.RunMode;
 import com.zhan.jarvis.config.JarvisConfig;
 import com.zhan.jarvis.llm.AgentLLMProvider;
+import com.zhan.jarvis.llm.ChatResponse;
 import com.zhan.jarvis.llm.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,11 +43,20 @@ public class Planner {
     }
 
     public ExecutionPlan plan(String runId, String sessionId, RunMode mode, String userMessage, String workspace) {
+        return planWithUsage(runId, sessionId, mode, userMessage, workspace).plan();
+    }
+
+    /**
+     * 生成计划并返回规划调用本身的 token 用量。
+     * 规划器是独立模型调用，必须计入整次 Agent 运行，不能只统计主循环。
+     */
+    public PlanningResult planWithUsage(String runId, String sessionId, RunMode mode,
+                                        String userMessage, String workspace) {
         if (config == null || !config.enabled() || mode == RunMode.CHAT) {
-            return null;
+            return PlanningResult.empty();
         }
         if (!shouldPlan(mode, userMessage)) {
-            return null;
+            return PlanningResult.empty();
         }
         try {
             var response = llmProvider.chat(List.of(
@@ -56,13 +66,26 @@ public class Planner {
             //对Planner输出的结果进行解析，填入到我们的对象中
             ExecutionPlan plan = parsePlan(runId, sessionId, mode, response.content());
             if (plan != null && plan.hasSteps()) {
-                return plan;
+                return new PlanningResult(plan, usageOf(response));
             }
+            return new PlanningResult(fallbackPlan(runId, sessionId, mode, userMessage), usageOf(response));
         } catch (Exception e) {
             log.warn("[Planner] LLM 规划失败，使用兜底计划: {}", e.getMessage());
             log.debug("[Planner] LLM 规划失败详情", e);
         }
-        return fallbackPlan(runId, sessionId, mode, userMessage);
+        return new PlanningResult(fallbackPlan(runId, sessionId, mode, userMessage), new ChatResponse.TokenUsage(0, 0, 0));
+    }
+
+    private ChatResponse.TokenUsage usageOf(ChatResponse response) {
+        return response != null && response.usage() != null
+                ? response.usage()
+                : new ChatResponse.TokenUsage(0, 0, 0);
+    }
+
+    public record PlanningResult(ExecutionPlan plan, ChatResponse.TokenUsage usage) {
+        public static PlanningResult empty() {
+            return new PlanningResult(null, new ChatResponse.TokenUsage(0, 0, 0));
+        }
     }
 
     public String renderForContext(ExecutionPlan plan) {

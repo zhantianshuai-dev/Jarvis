@@ -1,5 +1,6 @@
 package com.zhan.jarvis.tool;
 
+import com.zhan.jarvis.agent.RunMode;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -36,6 +37,20 @@ class ToolRegistrySubagentTest {
         assertThat(names)
                 .contains("read_file", "write_file", "git", "memory_search", "web_fetch")
                 .doesNotContain("spawn", "cron", "imagegen", "feishu_history_messages");
+    }
+
+    @Test
+    void superAgentExposesDeferredToolsDirectly() {
+        var local = new LocalMcpServer();
+        local.registerAll(tool("git"), tool("cron"), tool("read_file"));
+        var registry = new ToolRegistry(local, List.of());
+
+        var names = registry.listToolsForMode(RunMode.SUPER_AGENT, "查看 git 状态", Set.of())
+                .stream()
+                .map(com.zhan.jarvis.llm.ToolDefinition::name)
+                .toList();
+
+        assertThat(names).contains("git", "cron", "read_file").doesNotContain("tool_search");
     }
 
     private McpTool tool(String name) {

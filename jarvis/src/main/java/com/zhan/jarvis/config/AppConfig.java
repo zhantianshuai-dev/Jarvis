@@ -24,6 +24,7 @@ import com.zhan.jarvis.agent.planner.PlanManager;
 import com.zhan.jarvis.agent.planner.Planner;
 import com.zhan.jarvis.agent.event.JsonlRunEventStore;
 import com.zhan.jarvis.agent.event.RunEventStore;
+import com.zhan.jarvis.agent.loop.ToolResultStore;
 import com.zhan.jarvis.artifact.ArtifactManager;
 import com.zhan.jarvis.permission.ToolPermissionManager;
 import com.zhan.jarvis.permission.AgentCheckpointStore;
@@ -126,6 +127,11 @@ public class AppConfig {
     }
 
     @Bean
+    public ToolResultStore toolResultStore(SessionFileSpaceManager fileSpaceManager) {
+        return new ToolResultStore(fileSpaceManager);
+    }
+
+    @Bean
     public ArtifactManager artifactManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
         return new ArtifactManager(fileSpaceManager, objectMapper);
     }
@@ -206,11 +212,11 @@ public class AppConfig {
     public LocalMcpServer localMcpServer(ObjectMapper objectMapper, MemoryServiceClient memoryClient,
                                          ImageGenClient imageGenClient, SandboxManager sandboxManager,
                                          CronService cronService, WebClient.Builder builder,
-                                         JarvisConfig config, TodoManager todoManager) {
+                                         JarvisConfig config, TodoManager todoManager, ToolResultStore toolResultStore) {
         var server = new LocalMcpServer();
         // 基础工具（spawn 工具稍后通过派生工具初始化器注册，避免循环依赖）
         server.registerAll(
-                new ReadFileTool(objectMapper, sandboxManager),
+                new ReadFileTool(objectMapper, sandboxManager, toolResultStore),
                 new WriteFileTool(objectMapper, sandboxManager),
                 new EditFileTool(objectMapper, sandboxManager),
                 new ListDirTool(objectMapper, sandboxManager),
@@ -308,11 +314,12 @@ public class AppConfig {
                                 ArtifactManager artifactManager,
                                 Planner planner,
                                 PlanManager planManager,
-                                TodoManager todoManager) {
+                                TodoManager todoManager,
+                                ToolResultStore toolResultStore) {
         log.info("创建 AgentLoop: maxIterations={}", config.agent().maxIterations());
         return new AgentLoop(config.agent(), llmProvider, toolRegistry, contextBuilder,
                 sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver, middlewareChain,
-                runEventStore, artifactManager, planner, planManager, todoManager);
+                runEventStore, artifactManager, planner, planManager, todoManager, toolResultStore);
     }
 
     // ---- 2.6 消息总线解耦 ----

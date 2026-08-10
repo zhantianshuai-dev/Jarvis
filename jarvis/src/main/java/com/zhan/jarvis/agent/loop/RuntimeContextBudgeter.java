@@ -15,7 +15,7 @@ import java.util.Set;
 public class RuntimeContextBudgeter {
 
     private static final int DEFAULT_MAX_INPUT_TOKENS = 16_000;
-    private static final int DEFAULT_MAX_TOOL_RESULT_CHARS = 1_200;
+    private static final int DEFAULT_MAX_TOOL_RESULT_CHARS = 2_000;
     private static final int DEFAULT_MAX_CONTEXT_BLOCK_CHARS = 4_000;
     private static final int DEFAULT_KEEP_RECENT_MESSAGES = 12;
     private static final int RECENT_TOOL_MESSAGES_TO_KEEP = 4;

@@ -7,20 +7,29 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 宿主机直接执行后端。
- * 这是最小实现，不提供容器级隔离，但统一限制所有文件操作在工作区内。
+ * 不提供容器级隔离。除工作目录外的显式路径、路径穿越和嵌套解释器会被拒绝，
+ * 以降低直接执行模式的误操作风险；生产环境仍应使用容器沙箱。
  */
 public class DirectBackend implements SandboxBackend {
 
     private static final int TIMEOUT_SECONDS = 60;
     private static final int MAX_OUTPUT_LENGTH = 100_000;
+    private static final Pattern PARENT_TRAVERSAL = Pattern.compile("(?:^|[\\s\\\"'=<>;/|&])\\.\\.(?=$|[\\s\\\"'=<>;/|&])");
+    private static final Pattern ABSOLUTE_PATH = Pattern.compile("(?:^|[\\s\\\"'=<>])(/[^\\s\\\"'`;&|()<>]*)");
+    private static final Pattern NESTED_INTERPRETER = Pattern.compile(
+            "(?i)(\\$\\(|`|\\$\\{|\\beval\\b|\\bsource\\b|\\b(?:sh|bash|zsh|dash|fish)\\s+-c\\b|"
+                    + "\\b(?:python|python3|node|perl|ruby|php)\\s+-(?:c|e)\\b)");
 
     @Override
     public CommandResult execute(String command, Path workspaceDir) throws IOException, InterruptedException {
         Path workspace = normalizeWorkspace(workspaceDir);
         Files.createDirectories(workspace);
+        validateCommandScope(command, workspace);
 
         var pb = new ProcessBuilder("sh", "-c", command);
         pb.directory(workspace.toFile());
@@ -95,5 +104,34 @@ public class DirectBackend implements SandboxBackend {
             throw new IOException("路径越界，禁止访问 workspace 之外的文件: " + resolved);
         }
         return resolved;
+    }
+
+    /**
+     * 直接执行模式无法像容器一样由操作系统强制隔离，因此只接受可静态验证的命令形式。
+     * 这会阻止绝对路径和 ../ 逃逸；需要任意 shell 表达能力时必须切换到 HTTP/Docker 沙箱。
+     */
+    private static void validateCommandScope(String command, Path workspace) throws IOException {
+        String source = command == null ? "" : command.strip();
+        if (source.isBlank()) {
+            throw new IOException("命令不能为空");
+        }
+        if (PARENT_TRAVERSAL.matcher(source).find()) {
+            throw new IOException("直接执行模式拒绝包含 ../ 的路径穿越命令；请使用工作区内相对路径");
+        }
+        if (NESTED_INTERPRETER.matcher(source).find()) {
+            throw new IOException("直接执行模式拒绝嵌套解释器或动态路径表达式；请改用容器沙箱执行该命令");
+        }
+        Matcher matcher = ABSOLUTE_PATH.matcher(source);
+        while (matcher.find()) {
+            Path candidate;
+            try {
+                candidate = Path.of(matcher.group(1)).toAbsolutePath().normalize();
+            } catch (Exception e) {
+                throw new IOException("命令包含无法验证的绝对路径", e);
+            }
+            if (!candidate.startsWith(workspace)) {
+                throw new IOException("直接执行模式禁止访问工作区外的绝对路径: " + candidate);
+            }
+        }
     }
 }
