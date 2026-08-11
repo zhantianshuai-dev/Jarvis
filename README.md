@@ -1,150 +1,144 @@
 # Jarvis
 
-Jarvis 是一个 Java 实现的个人 AI Agent 项目，提供 Web 聊天界面、工具调用、长期记忆、MCP 扩展、定时任务、Git 工作区管理和飞书机器人接入能力。项目目标是把 Agent 的“对话、执行、记忆、协作入口”拆成清晰可维护的工程模块，方便本地使用和二次开发。
+[![Java](https://img.shields.io/badge/Java-21%2B-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Jarvis 是一个面向个人工作流的 Java AI Agent。它将对话、规划、工具执行、长期记忆和多渠道接入组织成独立模块，让用户能够通过 Web 或飞书，以自然语言完成代码仓库操作、文件处理、信息查询和自动化任务。
+
+项目关注的不只是“模型能否回答”，还包括 Agent 在真实执行环境中的**上下文成本、工作目录边界、人工确认、会话可追溯性与可扩展工具接入**。
 
 ## 核心能力
 
-- **Agent Loop**：支持多轮推理、工具调用、SSE 流式输出和 Markdown 渲染。
-- **工具系统**：内置文件读写、Shell 执行、Git、Cron、记忆检索、图片生成、飞书历史消息等工具。
-- **MCP 扩展**：支持本地 `stdio` MCP Server，也支持外部 `sse` MCP Server。
-- **Memory Service**：通过 JSONL 持久化会话，支持会话压缩、Working Memory 和长期记忆提取。
-- **Token 治理**：支持运行模式路由、延迟工具暴露、大工具结果摘要和文件写入参数清洗，减少工具 Schema 与大文本内容对上下文窗口的占用。
-- **Sandbox 执行**：支持 `direct` 本机执行和 `http` 独立 sandbox-service 执行，文件与命令工具可切换到 Docker 挂载目录内运行。
-- **Web UI**：包含注册、登录、会话列表、聊天、工具确认、Worktree 管理等页面。
-- **权限与确认**：使用 Sa-Token 做接口认证，对高风险工具调用提供人工确认机制。
-- **Channel 接入**：支持 HTTP/Web 前端入口，也支持飞书机器人 WebSocket 长连接入口。
+| 能力 | 说明 |
+| --- | --- |
+| **Agent 执行循环** | 支持多轮工具调用、SSE 流式输出、Markdown 渲染、规划与 Todo 状态回传。 |
+| **运行模式与 Token 治理** | 提供 `/chat`、`/agent`、`/super-agent` 模式；通过延迟工具暴露、上下文预算和大结果外置降低输入成本。 |
+| **工具与 MCP** | 内置文件、Shell、Git、Cron、记忆、图片生成与飞书工具；兼容本地 `stdio` 和远程 `sse` MCP Server。 |
+| **记忆服务** | 使用 JSONL 保存会话，提供 Working Memory、自动压缩、长期记忆提取和可选 PostgreSQL 向量检索。 |
+| **Git 协作** | 支持状态、差异、提交、推送、Worktree 与任务状态管理；危险操作可要求人工确认后恢复执行循环。 |
+| **安全执行** | 提供认证、工作目录路径校验、工具权限管理，以及可选的独立 HTTP Sandbox 服务。 |
+| **接入方式** | 包含 React Web 客户端，并支持飞书机器人 WebSocket 长连接。 |
 
-## 架构概览
+## 架构
 
-```text
-jarvis-web  ->  jarvis  ->  memory-service
-   |             |              |
-   |             |              +-- JSONL 会话 / 可选 PostgreSQL 向量存储
-   |             +-- Agent Loop / Tools / MCP / Auth / Feishu / Cron
-   |             +-- sandbox-service（可选，HTTP 工具执行沙箱）
-   +-- React + Vite
+```mermaid
+flowchart LR
+    User[用户] --> Web[jarvis-web]
+    User --> Feishu[飞书机器人]
+    Web --> Jarvis[Jarvis 服务]
+    Feishu --> Jarvis
+
+    Jarvis --> Loop[Agent Loop]
+    Loop --> Planner[Planner / Todo]
+    Loop --> Registry[Tool Registry]
+    Registry --> Builtin[内置工具]
+    Registry --> MCP[MCP Server]
+    Registry --> Sandbox[可选 Sandbox]
+    Loop --> Memory[memory-service]
+
+    Memory --> Session[JSONL 会话]
+    Memory --> Vector[可选 PostgreSQL / pgvector]
 ```
-
-## 项目结构
-
-```text
-common/                  共享配置、Prompt、WebClient 等基础能力
-jarvis/                  Agent 主服务，端口默认 8082
-memory-service/          记忆与会话服务，端口默认 8081
-sandbox-service/          工具执行沙箱服务，端口默认 8090
-jarvis-web/              React Web 客户端
-workspace/skills/        可提交的技能描述文件
-```
-
-运行期数据默认不会提交到 Git，例如 `sessions/`、`data/`、`workspace/.tasks/`、`workspace/.worktrees/` 和本地密钥配置。
-
-## 环境要求
-
-- JDK 21+
-- Maven Wrapper（仓库已包含 `./mvnw`）
-- Node.js 20+
-- 可选：PostgreSQL，用于认证用户表、Token 用量统计和向量存储
 
 ## 快速开始
 
-1. 克隆仓库并进入目录。
+### 1. 准备环境
+
+- JDK 21+
+- Node.js 20+
+- Docker（仅在启用 Sandbox 时需要）
+- PostgreSQL（仅在启用用户、用量或向量存储时需要）
+
+### 2. 克隆并创建本地配置
 
 ```bash
 git clone https://github.com/zhantianshuai-dev/Jarvis.git
 cd Jarvis
+
+cp jarvis/src/main/resources/application-local.example.yaml \
+  jarvis/src/main/resources/application-local.yaml
+cp memory-service/src/main/resources/application-local.example.yaml \
+  memory-service/src/main/resources/application-local.yaml
 ```
 
-2. 复制本地配置模板。
-
-```bash
-cp jarvis/src/main/resources/application-local.example.yaml jarvis/src/main/resources/application-local.yaml
-cp memory-service/src/main/resources/application-local.example.yaml memory-service/src/main/resources/application-local.yaml
-```
-
-3. 填写必要环境变量或本地配置。
+两个本地配置模板都会读取以下环境变量。最少需要提供：
 
 ```bash
 export LLM_API_KEY=your_llm_key
-export JARVIS_AUTH_ENABLED=true
-export JARVIS_AUTH_REGISTRATION_ENABLED=true
+export LLM_API_BASE=https://your-openai-compatible-endpoint
+export LLM_MODEL=your_model_name
 ```
 
-4. 启动 memory-service。
+> [!TIP]
+> 本地配置文件已被 Git 忽略。请不要将 API Key、数据库密码或飞书密钥写入默认 `application.yaml`。
+
+### 3. 启动服务
+
+依次启动记忆服务、Jarvis 后端和前端：
 
 ```bash
 ./mvnw spring-boot:run -pl memory-service -Dspring-boot.run.profiles=local
-```
-
-5. 启动 Jarvis 后端。
-
-```bash
 ./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
-```
 
-6. 启动前端。
-
-```bash
 cd jarvis-web
 npm install
 npm run dev
 ```
 
-默认访问地址为 `http://127.0.0.1:5173`，后端 API 默认地址为 `http://localhost:8082`。
+打开 `http://127.0.0.1:5173`，注册账号后即可开始对话。默认端口如下：
 
-## 配置说明
-
-推荐把私密配置写入 `application-local.yaml` 或环境变量，不要改动默认 `application.yaml` 中的安全默认值。
-
-常用配置：
-
-| 配置 | 说明 |
+| 服务 | 地址 |
 | --- | --- |
-| `LLM_API_KEY` | Agent 和 memory-service 调用模型所需密钥 |
-| `LLM_API_BASE` | 兼容 OpenAI Chat Completions 的模型服务地址 |
-| `MEMORY_SERVICE_URL` | Jarvis 连接 memory-service 的地址 |
-| `JARVIS_AUTH_ENABLED` | 是否启用登录认证 |
-| `JARVIS_AUTH_ALLOWED_ORIGINS` | 前端跨域白名单，远程访问时需要加入对应地址 |
-| `MEMORY_SERVICE_POSTGRES_ENABLED` | 是否启用 PostgreSQL 存储和向量检索 |
-| `JARVIS_FEISHU_ENABLED` | 是否启用飞书 Channel |
-| `ZHIPU_API_KEY` | 智谱 Web Search MCP 示例密钥 |
-| `JARVIS_SANDBOX_BACKEND` | 工具执行后端，默认 `direct`，可设为 `http` |
-| `JARVIS_SANDBOX_HOST_ROOT` | 宿主机挂载给沙箱的根目录 |
-| `JARVIS_SANDBOX_BASE_URL` | sandbox-service 地址，默认 `http://localhost:8090` |
+| Web 客户端 | `http://127.0.0.1:5173` |
+| Jarvis API | `http://localhost:8082` |
+| Memory Service | `http://localhost:8081` |
+| Sandbox Service（可选） | `http://localhost:8090` |
 
-## Sandbox 配置
+## 从一次提问到一次执行
 
-默认 `JARVIS_SANDBOX_BACKEND=direct`，文件工具和 `exec` 仍在 Jarvis 进程所在宿主机执行，但会做 workspace 路径校验。
+1. 前端或飞书将用户消息投递到 Jarvis。
+2. Jarvis 创建或恢复会话，加载系统提示、Working Memory 和已缓存的记忆快照。
+3. Agent Loop 根据运行模式构造上下文并调用模型。
+4. 模型需要执行操作时，由 `ToolRegistry` 校验并分发到内置工具或 MCP 工具。
+5. 工具结果经过预算、截断或外置存储后回填循环，避免大文件和 `git diff` 长期占用上下文。
+6. 最终回复和执行状态通过 SSE 持续推送到界面，同时会话消息持久化到 JSONL。
 
-如需启用 Docker 沙箱，先打包并启动 sandbox-service：
+## 运行模式
 
-```bash
-./mvnw package -pl sandbox-service -DskipTests
-JARVIS_SANDBOX_HOST_ROOT=/Users/you/project docker compose -f docker-compose.sandbox.yml up -d --build
-```
+| 模式 | 适用场景 | 工具策略 |
+| --- | --- | --- |
+| `/chat` | 问答、总结、普通对话 | 默认不暴露执行型工具，降低 Token 成本。 |
+| `/agent` | 文件、Git、查询等明确操作 | 先暴露轻量工具；模型可通过 `tool_search` 延迟获取工具组。 |
+| `/super-agent` | 多步骤、复杂任务 | 可使用更完整的工具集合，并根据复杂度生成计划和 Todo。 |
 
-然后启动 Jarvis 时开启 HTTP 后端：
+这种分层避免了简单问题反复携带大量工具 Schema；大工具和外部 MCP 仅在确实需要时进入下一轮模型请求。
 
-```bash
-export JARVIS_SANDBOX_BACKEND=http
-export JARVIS_SANDBOX_HOST_ROOT=/Users/you/project
-export JARVIS_SANDBOX_BASE_URL=http://localhost:8090
-./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
-```
+## 上下文与记忆
 
-路径映射规则：
+Jarvis 将“会话记录”和“模型上下文”分开处理：
 
-- 宿主机 `JARVIS_SANDBOX_HOST_ROOT` 会挂载到容器 `/workspace`。
-- Jarvis 会把用户选择的工作目录映射成容器内路径后发送给 sandbox-service。
-- sandbox-service 会再次校验所有文件路径必须位于 `/workspace` 下。
+- **会话可追溯**：用户、助手和工具消息以 JSONL 保存，可在重新登录或刷新后恢复。
+- **自动压缩**：会话 Token 接近阈值时，历史对话会归档并提取为 Working Memory，内存中保留摘要和近期消息。
+- **语义记忆**：memory-service 可提取长期记忆；启用 PostgreSQL 后，支持向量检索与层级召回。
+- **大结果外置**：超过预算的工具输出写入会话输出目录，模型仅收到摘要和引用，需要细节时再按范围读取。
 
-## MCP 配置示例
+## 工具、MCP 与 Skills
 
-本地 MCP 使用 `stdio`，Jarvis 会启动子进程并通过标准输入/输出发送 MCP JSON-RPC 请求。
+### 内置工具
+
+Jarvis 内置文件读写、目录读取、Shell、Git、Cron、记忆检索、图片生成、飞书历史消息等工具。所有工具统一经过 `ToolRegistry` 的参数校验、权限策略与生命周期 Hook。
+
+技能说明放在 `workspace/skills/`，用于向模型注入特定任务的执行规范。可提交技能定义，但不要提交运行时产生的会话、任务和工作目录数据。
+
+### MCP Server
+
+本地 MCP 使用 `stdio`：Jarvis 启动子进程，并通过标准输入/输出完成 MCP JSON-RPC 握手与调用。
 
 ```yaml
 jarvis:
   mcp:
-    enabled: true
     external-servers:
       - name: filesystem
         transport: stdio
@@ -155,33 +149,50 @@ jarvis:
           - ./workspace
 ```
 
-外部 MCP 可使用 `sse`：
+远程 MCP 使用 `sse`，可在配置中提供 URL 和请求头：
 
 ```yaml
 jarvis:
   mcp:
     external-servers:
-      - name: zhipu-web-search-sse
+      - name: web-search
         transport: sse
-        url: https://open.bigmodel.cn/api/mcp-broker/proxy/web-search/sse
+        url: https://example.com/mcp/sse
         headers:
-          Authorization: Bearer ${ZHIPU_API_KEY}
+          Authorization: Bearer ${MCP_API_KEY}
 ```
 
-## 开发命令
+## Git 与人工确认
+
+Git 工具支持状态查看、差异摘要、提交、推送与 Worktree 管理。`diff` 默认返回统计信息，避免将完整补丁直接塞入上下文。
+
+对于推送等高风险调用，`ToolPermissionManager` 会创建待确认任务并暂停当前执行状态。用户在界面确认后，Jarvis 恢复原有 Agent Loop，将实际执行结果继续回填给模型，而不是启动一条孤立的新流程。
+
+## Sandbox（可选）
+
+默认 `JARVIS_SANDBOX_BACKEND=direct`，工具在宿主机执行，但仍会校验工作目录边界。启用 HTTP Sandbox 后，文件和命令调用会转发到独立的 `sandbox-service`。
 
 ```bash
-./mvnw compile
-./mvnw test
 ./mvnw package -pl sandbox-service -DskipTests
-./mvnw spring-boot:run -pl memory-service -Dspring-boot.run.profiles=local
+JARVIS_SANDBOX_HOST_ROOT=/Users/you/project \
+  docker compose -f docker-compose.sandbox.yml up -d --build
+
+export JARVIS_SANDBOX_BACKEND=http
+export JARVIS_SANDBOX_HOST_ROOT=/Users/you/project
 ./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
-cd jarvis-web && npm run build
 ```
 
-## Agent 评测
+宿主机目录会挂载到容器 `/workspace`；Jarvis 和 sandbox-service 都会拒绝越出该根目录的路径。Sandbox 用于缩小工具执行影响面，不能替代权限控制、密钥隔离和人工确认。
 
-Jarvis 内置一套低成本端到端评测：12 个固定任务各运行 2 次，覆盖运行模式、文件与 Git 工具、人工确认、Planner/Todo 和 Token 治理。评测使用独立工作区和内存会话替身，不会连接 memory-service、飞书、外部 MCP 或远程 Git。
+## 可选集成
+
+- **飞书**：设置 `JARVIS_FEISHU_ENABLED=true` 并配置应用凭证后，Jarvis 以 WebSocket 长连接接收飞书事件，无需单独配置公网事件回调。
+- **PostgreSQL**：设置 `MEMORY_SERVICE_POSTGRES_ENABLED=true` 后，memory-service 使用 PostgreSQL 进行向量数据等持久化能力；未启用时可仅使用 JSONL 会话能力。
+- **多模型回退**：主模型兼容 OpenAI Chat Completions API，可按配置启用 SiliconFlow、百炼等回退 Provider。
+
+## 评测
+
+仓库提供低成本端到端评测基线，覆盖运行模式、路径边界、Git 延迟工具、人工确认、Planner/Todo 和上下文治理。评测使用独立工作区和内存会话替身，不会访问飞书、外部 MCP 或远程 Git。
 
 ```bash
 ./mvnw spring-boot:run -pl jarvis \
@@ -189,34 +200,45 @@ Jarvis 内置一套低成本端到端评测：12 个固定任务各运行 2 次�
   -Dspring-boot.run.main-class=com.zhan.jarvis.eval.JarvisEvaluationApplication
 ```
 
-可用 `JARVIS_EVAL_SCENARIOS=agent-path-boundary,agent-git-status-deferred` 只运行指定场景，便于低成本复测。
+报告会写入 `jarvis/evals/reports/<run-id>/`。使用 `JARVIS_EVAL_SCENARIOS` 指定场景，可用 `JARVIS_EVAL_RUNS_PER_SCENARIO` 调整重复次数。
 
-报告输出到 `jarvis/evals/reports/<run-id>/`，包含 `summary.md`、`summary.json` 和每个案例的精简轨迹。可通过 `JARVIS_EVAL_RUNS_PER_SCENARIO`、`JARVIS_EVAL_MAX_TOTAL_TOKENS`、`JARVIS_EVAL_LLM_MAX_TOKENS` 调整运行次数和预算。
+## 开发
 
-## 安全提示
+```bash
+./mvnw compile
+./mvnw test
+./mvnw package -pl sandbox-service -DskipTests
+cd jarvis-web && npm run build
+```
 
-- 不要提交 `application-local.yaml`、`.env`、API Key、Token、会话数据或本地运行日志。
-- 如果密钥曾经推送到公开仓库，请立即在对应平台轮换密钥。
-- 对外开放服务前，请启用 `JARVIS_AUTH_ENABLED=true` 并限制 `JARVIS_AUTH_ALLOWED_ORIGINS`。
-- Shell、Git、MCP、飞书等工具具备真实执行能力，建议仅授予可信用户访问。
-- 启用 sandbox-service 时仍需谨慎挂载目录；沙箱只能限制挂载范围内的影响面，不能替代权限确认和密钥隔离。
+项目结构：
 
-## 后续计划
+```text
+common/            共享 Prompt、HTTP 与基础配置
+jarvis/            Agent 主服务：Loop、工具、认证、Channel、Git 与 Planner
+memory-service/    会话、Working Memory、长期记忆与检索服务
+sandbox-service/   可选的 HTTP 工具执行服务
+jarvis-web/        React + Vite Web 客户端
+workspace/skills/  可提交的技能定义
+```
 
-- **更细粒度权限**：将现有人工确认机制扩展为面向用户、工具组和工作空间的统一权限策略。
-- **沙箱资源限制**：继续补充 CPU、内存、网络和只读挂载等 Docker 运行限制。
-- **上下文成本优化**：继续完善工具结果预算、文件按范围读取和长期会话压缩策略。
+## 安全说明
 
-## 贡献
+- 不要提交 `application-local.yaml`、`.env`、密钥、令牌、会话数据或运行日志。
+- 服务对外开放前应启用认证，并通过 `JARVIS_AUTH_ALLOWED_ORIGINS` 限制 Web 来源。
+- Shell、Git、MCP 与飞书工具会产生真实副作用，只应授权给可信用户。
+- 若密钥曾被推送到公共仓库，请立即在对应平台轮换。
 
-欢迎提交 Issue 和 Pull Request。提交前建议至少执行：
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request。提交前建议执行：
 
 ```bash
 ./mvnw test
 cd jarvis-web && npm run build
 ```
 
-请保持变更聚焦，并在 PR 中说明修改目的、影响范围、测试结果和必要截图。
+请在 PR 中说明修改目的、影响模块、测试结果，以及界面或 API 行为变更的截图、示例。
 
 ## 许可证
 
