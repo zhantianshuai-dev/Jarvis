@@ -1,6 +1,7 @@
 package com.zhan.jarvis.permission;
 
 import com.zhan.jarvis.hook.impl.GitPolicyHook;
+import com.zhan.jarvis.hook.HookDecisionException;
 import com.zhan.jarvis.tool.ToolContext;
 import org.springframework.stereotype.Component;
 
@@ -45,6 +46,19 @@ public class ToolPermissionManager {
     public PendingToolPermission take(String confirmId) {
         return pendingStore.take(confirmId)
                 .orElseThrow(() -> new IllegalArgumentException("确认操作不存在或已过期: " + confirmId));
+    }
+
+    public PendingToolPermission take(String confirmId, String userId) {
+        try {
+            return pendingStore.take(confirmId, userId)
+                    .orElseThrow(() -> new IllegalArgumentException("确认操作不存在或已过期: " + confirmId));
+        } catch (PendingPermissionStore.PermissionOwnerMismatchException e) {
+            throw new HookDecisionException(e.getMessage());
+        }
+    }
+
+    public int revokeRun(String runId) {
+        return pendingStore.revokeRun(runId);
     }
 
     private ToolPermissionDecision evaluateGit(Map<String, Object> arguments, ToolContext ctx) {

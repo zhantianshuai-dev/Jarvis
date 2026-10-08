@@ -4,7 +4,7 @@ package com.zhan.jarvis.subagent;
  * 子 Agent 执行结果。
  *
  * @param taskId  任务 ID
- * @param status  状态: running / completed / failed
+ * @param status  状态: running / completed / failed / cancelled / timed_out
  * @param result  结果文本（完成时）
  * @param error   错误信息（失败时）
  */
@@ -24,5 +24,13 @@ public record SubagentResult(
 
     public static SubagentResult running(String taskId) {
         return new SubagentResult(taskId, "running", null, null);
+    }
+
+    public static SubagentResult cancelled(String taskId, String reason) {
+        return new SubagentResult(taskId, "cancelled", null, reason);
+    }
+
+    public static SubagentResult timedOut(String taskId, String reason) {
+        return new SubagentResult(taskId, "timed_out", null, reason);
     }
 }

@@ -80,13 +80,23 @@ public class SseLoopObserver implements LoopObserver {
     }
 
     @Override
-    public void onDone(LoopOutcome outcome) {
+    public void onDone(LoopState state, LoopOutcome outcome) {
         emit(SseEventTypes.DONE, outcome.sessionId(), outcome.reply(), "chat", Map.of(
+                "run_id", state.runId(),
                 "iteration", outcome.iteration(),
                 "finish_reason", outcome.finishReason(),
                 "requires_confirmation", outcome.requiresConfirmation(),
                 "max_iterations_reached", outcome.maxIterationsReached(),
                 "token_usage", outcome.tokenUsage()
+        ));
+    }
+
+    @Override
+    public void onInterrupted(LoopState state, int iteration, String reason) {
+        emit(SseEventTypes.INTERRUPTED, state.sessionId(), "已停止当前任务", "chat", Map.of(
+                "run_id", state.runId(),
+                "iteration", iteration,
+                "reason", reason == null ? "" : reason
         ));
     }
 

@@ -93,6 +93,18 @@ public class TaskManager {
         return updated;
     }
 
+    public synchronized TaskRecord cancel(String taskId, String reason) throws IOException {
+        TaskRecord updated = updateStatus(taskId, "cancelled", "", truncate(reason));
+        appendEvent("task.cancelled", Map.of("task_id", updated.taskId(), "reason", updated.error()));
+        return updated;
+    }
+
+    public synchronized TaskRecord timeout(String taskId, String reason) throws IOException {
+        TaskRecord updated = updateStatus(taskId, "timed_out", "", truncate(reason));
+        appendEvent("task.timed_out", Map.of("task_id", updated.taskId(), "reason", updated.error()));
+        return updated;
+    }
+
     public synchronized List<TaskRecord> list() {
         return List.copyOf(loadIndex());
     }

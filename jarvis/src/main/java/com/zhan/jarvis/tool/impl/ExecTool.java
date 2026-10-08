@@ -47,7 +47,7 @@ public class ExecTool implements McpTool {
         }
 
         try {
-            return sandboxManager.execute(command, ctx.effectiveWorkspaceDir()).format();
+            return sandboxManager.execute(command, ctx.effectiveWorkspaceDir(), ctx.cancellationToken()).format();
         } catch (Exception e) {
             return "命令执行异常: " + e.getMessage();
         }

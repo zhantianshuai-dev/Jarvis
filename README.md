@@ -168,16 +168,44 @@ Git 工具支持状态查看、差异摘要、提交、推送与 Worktree 管理
 
 对于推送等高风险调用，`ToolPermissionManager` 会创建待确认任务并暂停当前执行状态。用户在界面确认后，Jarvis 恢复原有 Agent Loop，将实际执行结果继续回填给模型，而不是启动一条孤立的新流程。
 
+## 任务终止与恢复
+
+每次请求都会生成稳定的 `run_id`，并经历 `queued`、`running`、`waiting_confirmation` 等状态。运行快照持久化在工作区的 `runs/index.json`，刷新页面后前端可以重新查询状态；服务重启时，未完成的运行会被收敛为 `interrupted`，不会被误判为仍在执行。
+
+```http
+GET  /api/v1/chat/runs/{runId}
+POST /api/v1/chat/runs/{runId}/interrupt
+```
+
+终止请求会级联取消 LLM 流、正在等待的并发许可、工具进程与该 Run 派生的子 Agent，同时撤销尚未执行的人工确认凭证和 checkpoint。SSE 以 `interrupted` 事件结束，已生成的部分内容保留，后续不再发送普通 `done` 事件。确认卡的“拒绝”会写入后端会话状态，因此页面刷新后仍保持不可再次执行。
+
 ## Sandbox（可选）
 
-默认 `JARVIS_SANDBOX_BACKEND=direct`，工具在宿主机执行，但仍会校验工作目录边界。启用 HTTP Sandbox 后，文件和命令调用会转发到独立的 `sandbox-service`。
+Jarvis 支持三种工具执行后端：
+
+- `direct`：在宿主机直接执行，仅保留路径检查，不提供操作系统级隔离。
+- `os` / `seatbelt`：macOS 原生 Seatbelt 沙箱，采用与 Codex 相同的 `/usr/bin/sandbox-exec` 策略执行方式。
+- `http` / `docker`：将文件和命令调用转发到独立的 Docker `sandbox-service`。
+
+默认后端为 `os`，适用于 macOS 本地开发。默认模式为 `workspace-write`：命令可以读取宿主文件，写入范围限制在当前工作区和系统临时目录，网络默认关闭；所有子进程继承同一策略。选择 OS Sandbox 但 Seatbelt 不可用时，Jarvis 会启动失败，不会静默降级为直接执行。Linux 或服务器部署应显式选择 `docker`。
+
+```bash
+export JARVIS_SANDBOX_BACKEND=os
+export JARVIS_OS_SANDBOX_MODE=workspace-write
+export JARVIS_OS_SANDBOX_NETWORK_ACCESS=false
+./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
+```
+
+只读检查可设置 `JARVIS_OS_SANDBOX_MODE=read-only`。需要下载安装依赖或访问远程 Git 时，可以显式设置 `JARVIS_OS_SANDBOX_NETWORK_ACCESS=true`，外部写操作仍由工具权限与人工确认机制控制。
+
+使用 Docker Sandbox：
 
 ```bash
 ./mvnw package -pl sandbox-service -DskipTests
 JARVIS_SANDBOX_HOST_ROOT=/Users/you/project \
   docker compose -f docker-compose.sandbox.yml up -d --build
 
-export JARVIS_SANDBOX_BACKEND=http
+export JARVIS_SANDBOX_BACKEND=docker
 export JARVIS_SANDBOX_HOST_ROOT=/Users/you/project
 ./mvnw spring-boot:run -pl jarvis -Dspring-boot.run.profiles=local
 ```

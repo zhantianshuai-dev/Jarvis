@@ -1,5 +1,6 @@
 package com.zhan.jarvis.permission;
 
+import com.zhan.jarvis.concurrency.StripedLock;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -10,6 +11,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Agent 检查点存储。
@@ -18,8 +20,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class AgentCheckpointStore {
 
+    private static final long CLEANUP_INTERVAL_MS = 60_000;
+
     private final ConcurrentHashMap<String, AgentCheckpoint> checkpoints = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> confirmIndex = new ConcurrentHashMap<>();
+    private final StripedLock confirmLocks = new StripedLock(64);
+    private final AtomicLong nextCleanupAtMs = new AtomicLong();
     private final SessionFileSpaceManager fileSpaceManager;
     private final ObjectMapper objectMapper;
 
@@ -54,10 +60,20 @@ public class AgentCheckpointStore {
     }
 
     public Optional<AgentCheckpoint> take(String confirmId) {
-        cleanupExpired();
         if (confirmId == null || confirmId.isBlank()) {
             return Optional.empty();
         }
+        var lock = confirmLocks.forKey(confirmId);
+        lock.lock();
+        try {
+            return takeLocked(confirmId);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private Optional<AgentCheckpoint> takeLocked(String confirmId) {
+        cleanupExpired();
         String checkpointId = confirmIndex.remove(confirmId);
         AgentCheckpoint checkpoint = null;
         if (checkpointId != null && !checkpointId.isBlank()) {
@@ -80,14 +96,64 @@ public class AgentCheckpointStore {
 
     public List<AgentCheckpoint> listSession(String sessionId) {
         cleanupExpired();
+        Instant now = Instant.now();
         return checkpoints.values().stream()
+                .filter(checkpoint -> checkpoint.expiresAt().isAfter(now))
                 .filter(checkpoint -> sessionId == null || sessionId.isBlank()
                         || sessionId.equals(checkpoint.sessionId()))
                 .sorted((a, b) -> b.createdAt().compareTo(a.createdAt()))
                 .toList();
     }
 
+    /** 撤销某个 Run 遗留的所有人工确认检查点。 */
+    public int revokeRun(String runId) {
+        if (runId == null || runId.isBlank()) {
+            return 0;
+        }
+        int[] removed = {0};
+        checkpoints.entrySet().removeIf(entry -> {
+            AgentCheckpoint checkpoint = entry.getValue();
+            if (!runId.equals(checkpoint.runId())) {
+                return false;
+            }
+            confirmIndex.remove(checkpoint.confirmId(), checkpoint.checkpointId());
+            deleteByConfirmId(checkpoint.confirmId());
+            removed[0]++;
+            return true;
+        });
+        if (Files.exists(fileSpaceManager.sessionsRoot())) {
+            try (var stream = Files.find(fileSpaceManager.sessionsRoot(), 4,
+                    (path, attrs) -> attrs.isRegularFile()
+                            && path.getFileName().toString().startsWith("confirm_")
+                            && path.getFileName().toString().endsWith(".json"))) {
+                stream.forEach(path -> {
+                    try {
+                        AgentCheckpoint checkpoint = objectMapper.readValue(Files.readString(path), AgentCheckpoint.class);
+                        if (checkpoint != null && runId.equals(checkpoint.runId())) {
+                            confirmIndex.remove(checkpoint.confirmId());
+                            checkpoints.remove(checkpoint.checkpointId());
+                            if (Files.deleteIfExists(path)) {
+                                removed[0]++;
+                            }
+                        }
+                    } catch (Exception ignored) {
+                        // 单个损坏文件不阻断其他检查点撤销。
+                    }
+                });
+            } catch (Exception ignored) {
+                // 磁盘清理失败不影响内存态撤销。
+            }
+        }
+        return removed[0];
+    }
+
     private void cleanupExpired() {
+        long nowMs = System.currentTimeMillis();
+        long scheduled = nextCleanupAtMs.get();
+        if (nowMs < scheduled
+                || !nextCleanupAtMs.compareAndSet(scheduled, nowMs + CLEANUP_INTERVAL_MS)) {
+            return;
+        }
         Instant now = Instant.now();
         checkpoints.entrySet().removeIf(entry -> {
             boolean expired = entry.getValue().expiresAt().isBefore(now);

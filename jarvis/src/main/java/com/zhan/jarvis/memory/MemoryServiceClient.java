@@ -1,6 +1,7 @@
 package com.zhan.jarvis.memory;
 
 import com.zhan.jarvis.config.JarvisConfig;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -10,6 +11,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * memory-service HTTP 客户端 — 封装对 memory-service 的 API 调用。
@@ -20,35 +22,44 @@ public class MemoryServiceClient {
 
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
+    private final ConcurrencyController concurrencyController;
 
     public MemoryServiceClient(JarvisConfig.MemoryServiceConfig config, WebClient.Builder builder,
                                ObjectMapper objectMapper) {
+        this(config, builder, objectMapper, null);
+    }
+
+    public MemoryServiceClient(JarvisConfig.MemoryServiceConfig config, WebClient.Builder builder,
+                               ObjectMapper objectMapper, ConcurrencyController concurrencyController) {
         this.webClient = builder
                 .baseUrl(stripTrailingSlash(config.baseUrl()))
                 .defaultHeader("Content-Type", "application/json")
                 .build();
         this.objectMapper = objectMapper;
+        this.concurrencyController = concurrencyController != null
+                ? concurrencyController
+                : new ConcurrencyController(null);
         log.info("MemoryServiceClient 已创建: baseUrl={}", config.baseUrl());
     }
 
     /** 语义检索记忆/资源/技能 */
     public String search(String query, int limit) {
-        return webClient.post()
+        return withPermit(() -> webClient.post()
                 .uri("/api/v1/search")
                 .bodyValue(Map.of("query", query, "limit", limit))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
     }
 
     /** 写入新记忆 */
     public String write(String content, String contextType) {
-        return webClient.post()
+        return withPermit(() -> webClient.post()
                 .uri("/api/v1/content/write")
                 .bodyValue(Map.of("content", content, "contextType", contextType, "source", "jarvis"))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
     }
 
     /** 创建会话 */
@@ -58,14 +69,14 @@ public class MemoryServiceClient {
 
     /** 创建会话，并写入归属用户 */
     public void createSession(String sessionId, String ownerUserId) {
-        webClient.post()
+        withPermit(() -> webClient.post()
                 .uri("/api/v1/session/create")
                 .bodyValue(Map.of(
                         "session_id", sessionId,
                         "owner_user_id", ownerUserId != null ? ownerUserId : ""))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
     }
 
     /** 追加消息到会话 */
@@ -80,12 +91,12 @@ public class MemoryServiceClient {
         body.put("role", role);
         body.put("text", text != null ? text : "");
         body.put("metadata", metadata != null ? metadata : Map.of());
-        webClient.post()
+        withPermit(() -> webClient.post()
                 .uri("/api/v1/session/message")
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
     }
 
     /** 触发 memory-service 对会话进行归档、working memory 生成和记忆提取。 */
@@ -95,23 +106,23 @@ public class MemoryServiceClient {
         if (keepRecentCount >= 0) {
             body.put("keep_recent_count", keepRecentCount);
         }
-        return webClient.post()
+        return withPermit(() -> webClient.post()
                 .uri("/api/v1/session/commit")
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
     }
 
     public List<SessionSummary> listSessions(String ownerUserId) {
-        String json = webClient.get()
+        String json = withPermit(() -> webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .path("/api/v1/session/list")
                         .queryParam("owner_user_id", ownerUserId != null ? ownerUserId : "")
                         .build())
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
         if (json == null || json.isBlank()) return List.of();
 
         try {
@@ -135,14 +146,14 @@ public class MemoryServiceClient {
     }
 
     public SessionMessages getSessionMessages(String sessionId, int maxMessages) {
-        String json = webClient.get()
+        String json = withPermit(() -> webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .path("/api/v1/session/{id}/messages")
                         .queryParam("max_messages", maxMessages)
                         .build(sessionId))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
         if (json == null || json.isBlank()) {
             return new SessionMessages(sessionId, "", "新的对话", Map.of(), List.of());
         }
@@ -173,14 +184,14 @@ public class MemoryServiceClient {
     }
 
     public boolean deleteSession(String sessionId, String ownerUserId) {
-        String json = webClient.delete()
+        String json = withPermit(() -> webClient.delete()
                 .uri(uriBuilder -> uriBuilder
                         .path("/api/v1/session/{id}")
                         .queryParam("owner_user_id", ownerUserId != null ? ownerUserId : "")
                         .build(sessionId))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
         if (json == null || json.isBlank()) {
             return true;
         }
@@ -198,14 +209,14 @@ public class MemoryServiceClient {
      * 返回 working_memory + 最近 N 条消息。
      */
     public SessionContext getSessionContext(String sessionId, int maxMessages) {
-        String json = webClient.get()
+        String json = withPermit(() -> webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .path("/api/v1/session/{id}/context")
                         .queryParam("max_messages", maxMessages)
                         .build(sessionId))
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block());
 
         if (json == null || json.isBlank()) return SessionContext.EMPTY;
 
@@ -234,6 +245,12 @@ public class MemoryServiceClient {
 
     private static String stripTrailingSlash(String s) {
         return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
+    }
+
+    private <T> T withPermit(Supplier<T> operation) {
+        try (var ignored = concurrencyController.acquireMemory()) {
+            return operation.get();
+        }
     }
 
     private static String text(JsonNode node, String field) {

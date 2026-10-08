@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 面向 HTTP 客户端的会话级 SSE 事件中心。
@@ -20,11 +21,15 @@ public class SseEventHub {
     private static final Logger log = LoggerFactory.getLogger(SseEventHub.class);
     private static final Duration PING_INTERVAL = Duration.ofSeconds(20);
 
-    private final Map<String, Sinks.Many<ServerSentEvent<Map<String, Object>>>> sinks =
+    private final Map<String, SessionSink> sinks =
             new ConcurrentHashMap<>();
 
     public Flux<ServerSentEvent<Map<String, Object>>> subscribe(String sessionId) {
-        var sink = sink(sessionId);
+        var holder = sinks.compute(sessionId, (ignored, current) -> {
+            var value = current == null ? new SessionSink() : current;
+            value.subscribers.incrementAndGet();
+            return value;
+        });
         var connected = ServerSentEvent.<Map<String, Object>>builder()
                 .event(SseEventTypes.CONNECTED)
                 .data(event(SseEventTypes.CONNECTED, sessionId, "", "sse"))
@@ -34,8 +39,8 @@ public class SseEventHub {
                         .event(SseEventTypes.PING)
                         .data(event(SseEventTypes.PING, sessionId, "", "sse"))
                         .build());
-        return Flux.concat(Flux.just(connected), Flux.merge(sink.asFlux(), ping))
-                .doOnCancel(() -> log.debug("SSE 订阅取消: sessionId={}", sessionId));
+        return Flux.concat(Flux.just(connected), Flux.merge(holder.sink.asFlux(), ping))
+                .doFinally(signal -> release(sessionId, holder));
     }
 
     public void publish(String sessionId, String type, String content, String source) {
@@ -51,15 +56,22 @@ public class SseEventHub {
                 .event(type)
                 .data(data)
                 .build();
-        var result = sink(sessionId).tryEmitNext(event);
+        var holder = sinks.get(sessionId);
+        if (holder == null) {
+            log.debug("SSE 会话当前没有订阅者，跳过实时事件: sessionId={}, type={}", sessionId, type);
+            return;
+        }
+        var result = holder.sink.tryEmitNext(event);
         if (result.isFailure()) {
             log.debug("SSE 事件投递失败: sessionId={}, type={}, result={}", sessionId, type, result);
         }
     }
 
-    private Sinks.Many<ServerSentEvent<Map<String, Object>>> sink(String sessionId) {
-        return sinks.computeIfAbsent(sessionId, ignored ->
-                Sinks.many().multicast().directBestEffort());
+    private void release(String sessionId, SessionSink expected) {
+        if (expected.subscribers.decrementAndGet() == 0) {
+            sinks.remove(sessionId, expected);
+            log.debug("SSE 会话无订阅者，释放 Sink: sessionId={}", sessionId);
+        }
     }
 
     private Map<String, Object> event(String type, String sessionId, String content, String source) {
@@ -70,5 +82,11 @@ public class SseEventHub {
         data.put("source", source == null ? "" : source);
         data.put("created_at", Instant.now().toString());
         return data;
+    }
+
+    private static final class SessionSink {
+        private final Sinks.Many<ServerSentEvent<Map<String, Object>>> sink =
+                Sinks.many().multicast().directBestEffort();
+        private final AtomicInteger subscribers = new AtomicInteger();
     }
 }

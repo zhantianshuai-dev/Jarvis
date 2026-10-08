@@ -216,17 +216,20 @@ public class SessionService {
                 continue;
             }
             String traceType = stringValue(metadata.get("trace_type"));
+            boolean rejected = "rejected_tool_result".equals(traceType)
+                    || !stringValue(metadata.get("rejected_by")).isBlank();
             boolean confirmed = "confirmed_tool_result".equals(traceType)
                     || truthy(metadata.get("human_confirmed"))
                     || !stringValue(metadata.get("confirmed_by")).isBlank();
-            if (!confirmed) {
+            if (!confirmed && !rejected) {
                 continue;
             }
             var item = new LinkedHashMap<String, Object>();
             item.put("confirmId", confirmId);
-            item.put("status", "confirmed");
+            item.put("status", rejected ? "rejected" : "confirmed");
             item.put("tool", stringValue(metadata.get("tool_name")));
             item.put("confirmedBy", stringValue(metadata.get("confirmed_by")));
+            item.put("rejectedBy", stringValue(metadata.get("rejected_by")));
             item.put("createdAt", message.createdAt().toString());
             states.put(confirmId, item);
         }

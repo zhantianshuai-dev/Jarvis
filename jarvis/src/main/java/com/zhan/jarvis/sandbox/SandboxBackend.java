@@ -1,5 +1,7 @@
 package com.zhan.jarvis.sandbox;
 
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
@@ -11,6 +13,16 @@ import java.util.List;
 public interface SandboxBackend {
 
     CommandResult execute(String command, Path workspaceDir) throws IOException, InterruptedException;
+
+    default CommandResult execute(String command, Path workspaceDir, TurnCancellationToken cancellationToken)
+            throws IOException, InterruptedException {
+        TurnCancellationToken token = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
+        token.throwIfCancellationRequested();
+        CommandResult result = execute(command, workspaceDir);
+        token.throwIfCancellationRequested();
+        return result;
+    }
 
     String readFile(Path workspaceDir, String path) throws IOException;
 

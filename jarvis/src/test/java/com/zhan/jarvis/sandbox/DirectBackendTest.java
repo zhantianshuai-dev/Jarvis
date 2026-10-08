@@ -1,14 +1,19 @@
 package com.zhan.jarvis.sandbox;
 
+import com.zhan.jarvis.agent.control.TurnCancellationSource;
+import com.zhan.jarvis.agent.control.TurnInterruptedException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class DirectBackendTest {
 
@@ -47,5 +52,33 @@ class DirectBackendTest {
                 () -> backend.execute("printf 'unsafe' > " + outside, workspace));
 
         assertFalse(Files.exists(outside));
+    }
+
+    @Test
+    void cancellationStopsRunningCommand() throws Exception {
+        Path workspace = Files.createDirectory(tempDir.resolve("workspace"));
+        var source = new TurnCancellationSource();
+        var execution = CompletableFuture.runAsync(() -> {
+            try {
+                backend.execute("sleep 10", workspace, source.token());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        Thread.sleep(150);
+        source.cancel("test_interrupted");
+
+        var error = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> execution.get(2, TimeUnit.SECONDS));
+        assertThat(rootCause(error)).isInstanceOf(TurnInterruptedException.class);
+    }
+
+    private static Throwable rootCause(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 }

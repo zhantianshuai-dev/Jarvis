@@ -1,5 +1,7 @@
 package com.zhan.jarvis.subagent;
 
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+import com.zhan.jarvis.agent.control.TurnInterruptedException;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.llm.*;
 import com.zhan.jarvis.memory.MemoryServiceClient;
@@ -42,11 +44,21 @@ public class SubagentLoop {
     private final String parentUserId;
     private final Map<String, Object> metadata;
     private final ToolPayloadSanitizer toolPayloadSanitizer;
+    private final TurnCancellationToken cancellationToken;
 
     public SubagentLoop(String taskId, String task, ToolRegistry toolRegistry, AgentLLMProvider llmProvider,
                          MemoryServiceClient memoryClient, ObjectMapper objectMapper,
                          String workspaceDir, String parentSessionId, SessionKey parentSessionKey,
                          String parentUserId, Map<String, Object> metadata) {
+        this(taskId, task, toolRegistry, llmProvider, memoryClient, objectMapper, workspaceDir,
+                parentSessionId, parentSessionKey, parentUserId, metadata, TurnCancellationToken.none());
+    }
+
+    public SubagentLoop(String taskId, String task, ToolRegistry toolRegistry, AgentLLMProvider llmProvider,
+                        MemoryServiceClient memoryClient, ObjectMapper objectMapper,
+                        String workspaceDir, String parentSessionId, SessionKey parentSessionKey,
+                        String parentUserId, Map<String, Object> metadata,
+                        TurnCancellationToken cancellationToken) {
         this.taskId = taskId;
         this.task = task;
         this.toolRegistry = toolRegistry;
@@ -59,6 +71,8 @@ public class SubagentLoop {
         this.parentUserId = parentUserId == null || parentUserId.isBlank() ? "subagent" : parentUserId;
         this.metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
         this.toolPayloadSanitizer = new ToolPayloadSanitizer(objectMapper);
+        this.cancellationToken = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
     }
 
     public String taskId() { return taskId; }
@@ -72,6 +86,7 @@ public class SubagentLoop {
         log.info("[Subagent {}] 开始执行任务: {}", taskId, task);
 
         try {
+            cancellationToken.throwIfCancellationRequested();
             // 搜索经验记忆
             String expContext = "";
             try {
@@ -96,10 +111,12 @@ public class SubagentLoop {
             // 子 Agent 循环
             int iteration = 0;
             while (iteration < MAX_ITERATIONS) {
+                cancellationToken.throwIfCancellationRequested();
                 iteration++;
                 log.debug("[Subagent {}] 第 {}/{} 轮", taskId, iteration, MAX_ITERATIONS);
 
-                ChatResponse response = llmProvider.chat(messages, restrictedTools);
+                ChatResponse response = llmProvider.chat(messages, restrictedTools, cancellationToken);
+                cancellationToken.throwIfCancellationRequested();
 
                 if (response.hasToolCalls()) {
                     messages.add(Message.assistant(
@@ -111,9 +128,12 @@ public class SubagentLoop {
                             @SuppressWarnings("unchecked")
                             Map<String, Object> args = objectMapper.readValue(tc.arguments(), Map.class);
                             var ctx = new ToolContext(parentSessionId + "/sub/" + taskId,
-                                    parentSessionKey, workspaceDir, parentUserId, metadata);
+                                    parentSessionKey, workspaceDir, parentUserId, metadata,
+                                    taskId, cancellationToken);
                             String result = toolRegistry.executeTool(tc.name(), args, ctx);
                             messages.add(Message.tool(tc.id(), result));
+                        } catch (TurnInterruptedException e) {
+                            throw e;
                         } catch (Exception e) {
                             messages.add(Message.tool(tc.id(), "执行失败: " + e.getMessage()));
                         }
@@ -131,6 +151,9 @@ public class SubagentLoop {
 
             return SubagentResult.failed(taskId, "达到最大迭代次数 " + MAX_ITERATIONS);
 
+        } catch (TurnInterruptedException e) {
+            log.info("[Subagent {}] 已取消: {}", taskId, e.getMessage());
+            return SubagentResult.cancelled(taskId, e.getMessage());
         } catch (Exception e) {
             log.error("[Subagent {}] 执行异常", taskId, e);
             return SubagentResult.failed(taskId, e.getMessage());

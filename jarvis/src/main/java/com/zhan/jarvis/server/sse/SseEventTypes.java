@@ -15,6 +15,7 @@ public final class SseEventTypes {
     public static final String TODO_UPDATE = "todo_update";
     public static final String SUBAGENT_STATUS = "subagent_status";
     public static final String DONE = "done";
+    public static final String INTERRUPTED = "interrupted";
     public static final String ERROR = "error";
     public static final String MESSAGE = "message";
 

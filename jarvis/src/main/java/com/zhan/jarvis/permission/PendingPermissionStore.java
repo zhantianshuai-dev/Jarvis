@@ -1,5 +1,6 @@
 package com.zhan.jarvis.permission;
 
+import com.zhan.jarvis.concurrency.StripedLock;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -9,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 待确认权限存储。
@@ -17,7 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class PendingPermissionStore {
 
+    private static final long CLEANUP_INTERVAL_MS = 60_000;
+
     private final ConcurrentHashMap<String, PendingToolPermission> permissions = new ConcurrentHashMap<>();
+    private final StripedLock confirmLocks = new StripedLock(64);
+    private final AtomicLong nextCleanupAtMs = new AtomicLong();
     private final SessionFileSpaceManager fileSpaceManager;
     private final ObjectMapper objectMapper;
 
@@ -34,23 +40,98 @@ public class PendingPermissionStore {
     }
 
     public Optional<PendingToolPermission> take(String confirmId) {
-        cleanupExpired();
+        return take(confirmId, null);
+    }
+
+    /**
+     * 原子领取属于指定用户的待确认操作。
+     * 用户不匹配时保留确认项，避免越权请求让合法用户失去确认机会。
+     */
+    public Optional<PendingToolPermission> take(String confirmId, String expectedUserId) {
         if (confirmId == null || confirmId.isBlank()) {
             return Optional.empty();
         }
-        PendingToolPermission permission = permissions.remove(confirmId);
+        var lock = confirmLocks.forKey(confirmId);
+        lock.lock();
+        try {
+            return takeLocked(confirmId, expectedUserId);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private Optional<PendingToolPermission> takeLocked(String confirmId, String expectedUserId) {
+        cleanupExpired();
+        PendingToolPermission permission = permissions.get(confirmId);
         if (permission == null) {
             permission = load(confirmId).orElse(null);
         }
         if (permission == null || permission.expiresAt().isBefore(Instant.now())) {
+            permissions.remove(confirmId);
             deleteFile(confirmId);
             return Optional.empty();
         }
+        if (hasText(expectedUserId) && hasText(permission.requestedBy())
+                && !expectedUserId.equals(permission.requestedBy())) {
+            throw new PermissionOwnerMismatchException("无权确认其他用户的工具操作");
+        }
+        permissions.remove(confirmId, permission);
         deleteFile(confirmId);
         return Optional.of(permission);
     }
 
+    /** 撤销某个 Run 的全部待确认工具操作。 */
+    public int revokeRun(String runId) {
+        if (runId == null || runId.isBlank()) {
+            return 0;
+        }
+        int[] removed = {0};
+        permissions.entrySet().removeIf(entry -> {
+            if (!belongsToRun(entry.getValue(), runId)) {
+                return false;
+            }
+            deleteFile(entry.getKey());
+            removed[0]++;
+            return true;
+        });
+        if (Files.exists(fileSpaceManager.sessionsRoot())) {
+            try (var stream = Files.find(fileSpaceManager.sessionsRoot(), 4,
+                    (path, attrs) -> attrs.isRegularFile()
+                            && path.getFileName().toString().startsWith("pending_")
+                            && path.getFileName().toString().endsWith(".json"))) {
+                stream.forEach(path -> {
+                    try {
+                        PendingToolPermission permission = objectMapper.readValue(
+                                Files.readString(path), PendingToolPermission.class);
+                        if (permission != null && belongsToRun(permission, runId)) {
+                            permissions.remove(permission.confirmId());
+                            if (Files.deleteIfExists(path)) {
+                                removed[0]++;
+                            }
+                        }
+                    } catch (Exception ignored) {
+                        // 单个损坏文件不阻断其他待确认操作撤销。
+                    }
+                });
+            } catch (Exception ignored) {
+                // 磁盘清理失败不影响内存态撤销。
+            }
+        }
+        return removed[0];
+    }
+
+    private static boolean belongsToRun(PendingToolPermission permission, String runId) {
+        return permission.metadata() != null
+                && runId.equals(String.valueOf(permission.metadata().getOrDefault("run_id", "")));
+    }
+
     private void cleanupExpired() {
+        long nowMs = System.currentTimeMillis();
+        long scheduled = nextCleanupAtMs.get();
+        if (nowMs < scheduled
+                || !nextCleanupAtMs.compareAndSet(scheduled, nowMs + CLEANUP_INTERVAL_MS)) {
+            return;
+        }
         Instant now = Instant.now();
         permissions.entrySet().removeIf(entry -> {
             boolean expired = entry.getValue().expiresAt().isBefore(now);
@@ -142,5 +223,15 @@ public class PendingPermissionStore {
 
     private String safeConfirmId(String confirmId) {
         return confirmId == null ? "" : confirmId.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    public static final class PermissionOwnerMismatchException extends RuntimeException {
+        public PermissionOwnerMismatchException(String message) {
+            super(message);
+        }
     }
 }

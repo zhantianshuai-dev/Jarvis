@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * HTTP 通道适配器。
@@ -44,18 +45,28 @@ public class HttpChannel implements Channel {
 
     public OutboundMessage submitAndAwait(String messageId, String sessionId, String userId,
                                           String content, Duration timeout, Map<String, Object> metadata) {
+        var future = submit(messageId, sessionId, userId, content, metadata);
+        try {
+            return messageBus.await(future, timeout);
+        } catch (RuntimeException e) {
+            cancel(messageId);
+            throw e;
+        }
+    }
+
+    /** 提交消息但不阻塞 HTTP 线程，由调用方直接订阅 CompletableFuture。 */
+    public CompletableFuture<OutboundMessage> submit(String messageId, String sessionId, String userId,
+                                                       String content, Map<String, Object> metadata) {
         // 新建会话键，用于标识通道和会话。
         var sessionKey = new SessionKey(type(), CHANNEL_ID, sessionId);
         // 封装为入站消息。
         var inbound = InboundMessage.of(messageId, sessionKey, sessionId, userId, content, metadata);
         //将消息提交到消息队列中
-        var future = messageBus.submit(inbound);
-        try {
-            return messageBus.await(future, timeout);
-        } catch (RuntimeException e) {
-            messageBus.cancel(messageId);
-            throw e;
-        }
+        return messageBus.submit(inbound);
+    }
+
+    public void cancel(String messageId) {
+        messageBus.cancel(messageId);
     }
 
     @Override

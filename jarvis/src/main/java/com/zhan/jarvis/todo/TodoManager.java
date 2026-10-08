@@ -1,5 +1,6 @@
 package com.zhan.jarvis.todo;
 
+import com.zhan.jarvis.concurrency.StripedLock;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -26,13 +27,14 @@ public class TodoManager {
 
     private final SessionFileSpaceManager fileSpaceManager;
     private final ObjectMapper objectMapper;
+    private final StripedLock sessionLocks = new StripedLock(64);
 
     public TodoManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
         this.fileSpaceManager = fileSpaceManager;
         this.objectMapper = objectMapper;
     }
 
-    public synchronized TodoListState update(String sessionId, String runId, List<Map<String, Object>> rawItems)
+    public TodoListState update(String sessionId, String runId, List<Map<String, Object>> rawItems)
             throws IOException {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IOException("缺少 sessionId");
@@ -44,7 +46,18 @@ public class TodoManager {
             throw new IOException("Todo 数量不能超过 " + MAX_ITEMS);
         }
 
-        var previous = load(sessionId);
+        var lock = sessionLocks.forKey(sessionId);
+        lock.lock();
+        try {
+            return updateLocked(sessionId, runId, rawItems);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private TodoListState updateLocked(String sessionId, String runId, List<Map<String, Object>> rawItems)
+            throws IOException {
+        var previous = loadUnlocked(sessionId);
         var previousById = new LinkedHashMap<String, TodoItem>();
         for (TodoItem item : previous.items()) {
             previousById.put(item.id(), item);
@@ -81,7 +94,17 @@ public class TodoManager {
         return state;
     }
 
-    public synchronized TodoListState load(String sessionId) {
+    public TodoListState load(String sessionId) {
+        var lock = sessionLocks.forKey(sessionId);
+        lock.lock();
+        try {
+            return loadUnlocked(sessionId);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private TodoListState loadUnlocked(String sessionId) {
         Path file = todoFile(sessionId);
         if (!Files.exists(file)) {
             return new TodoListState(sessionId, "", List.of(), "");

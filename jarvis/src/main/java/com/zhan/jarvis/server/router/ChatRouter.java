@@ -3,9 +3,14 @@ package com.zhan.jarvis.server.router;
 import cn.hutool.core.util.IdUtil;
 import com.zhan.jarvis.agent.AgentLoop;
 import com.zhan.jarvis.agent.RunMode;
+import com.zhan.jarvis.agent.control.ActiveRunRegistry;
+import com.zhan.jarvis.agent.control.RunInterruptionService;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.channel.HttpChannel;
 import com.zhan.jarvis.channel.SessionKey;
+import com.zhan.jarvis.bus.MessageBus;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
+import com.zhan.jarvis.concurrency.SystemBusyException;
 import com.zhan.jarvis.server.sse.SseEventHub;
 import com.zhan.jarvis.server.sse.SseEventTypes;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
@@ -31,6 +36,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
 import static org.springframework.web.reactive.function.server.RequestPredicates.POST;
@@ -53,22 +59,34 @@ public class ChatRouter {
     private final WorkspaceResolver workspaceResolver;
     private final SessionFileSpaceManager fileSpaceManager;
     private final VisionClient visionClient;
+    private final ConcurrencyController concurrencyController;
+    private final MessageBus messageBus;
+    private final ActiveRunRegistry runRegistry;
+    private final RunInterruptionService interruptionService;
 
     public ChatRouter(HttpChannel httpChannel, AgentLoop agentLoop, SseEventHub sseEventHub,
                       WorkspaceResolver workspaceResolver, SessionFileSpaceManager fileSpaceManager,
-                      VisionClient visionClient) {
+                      VisionClient visionClient, ConcurrencyController concurrencyController,
+                      MessageBus messageBus, ActiveRunRegistry runRegistry,
+                      RunInterruptionService interruptionService) {
         this.httpChannel = httpChannel;
         this.agentLoop = agentLoop;
         this.sseEventHub = sseEventHub;
         this.workspaceResolver = workspaceResolver;
         this.fileSpaceManager = fileSpaceManager;
         this.visionClient = visionClient;
+        this.concurrencyController = concurrencyController;
+        this.messageBus = messageBus;
+        this.runRegistry = runRegistry;
+        this.interruptionService = interruptionService;
     }
 
     @Bean
     public RouterFunction<ServerResponse> chatRoute() {
         return route(POST("/api/v1/chat"), this::handleChat)
                 .andRoute(POST("/api/v1/chat/stream"), this::handleChatStream)
+                .andRoute(GET("/api/v1/chat/runs/{runId}"), this::handleRunStatus)
+                .andRoute(POST("/api/v1/chat/runs/{runId}/interrupt"), this::handleRunInterrupt)
                 .andRoute(GET("/api/v1/workspaces"), this::handleWorkspaces)
                 .andRoute(GET("/api/v1/events"), this::handleEvents)
                 .andRoute(GET("/api/v1/health"), this::handleHealth);
@@ -90,19 +108,30 @@ public class ChatRouter {
                     String userId = authenticatedUserId(req, cr.userId());
                     RunMode mode = RunMode.from(cr.mode());
                     String workspace = workspaceResolver.resolveWorkspace(cr.workspace());
-                    String messageId = "msg_" + IdUtil.getSnowflake(1, 1).nextId();
+                    String runId = "run_" + UUID.randomUUID();
                     log.info("收到消息: sessionId={}, mode={}, workspace={}, message={}",
                             sessionId, mode.value(), workspace, cr.message());
 
                     var metadata = buildMetadata(sessionId, mode, workspace, cr);
-                    var outbound = httpChannel.submitAndAwait(messageId, sessionId, userId,
-                            cr.message(), RESPONSE_TIMEOUT, metadata);
-                    return Map.<String, Object>of(
-                            "session_id", outbound.sessionId(),
-                            "reply", outbound.content()
-                    );
+                    metadata.put("run_id", runId);
+                    return new PreparedChat(runId, sessionId, userId, cr.message(), metadata);
                 }).subscribeOn(Schedulers.boundedElastic()))
-                .flatMap(body -> ServerResponse.ok().bodyValue(body)); //这里就是异步的，等有结果了再返回ok
+                .flatMap(prepared -> {
+                    runRegistry.prepare(prepared.messageId(), prepared.sessionId(), prepared.userId());
+                    var future = httpChannel.submit(prepared.messageId(), prepared.sessionId(), prepared.userId(),
+                            prepared.message(), prepared.metadata());
+                    return Mono.fromFuture(future)
+                            .timeout(RESPONSE_TIMEOUT)
+                            .doOnError(ignored -> httpChannel.cancel(prepared.messageId()))
+                            .doOnCancel(() -> httpChannel.cancel(prepared.messageId()))
+                            .map(outbound -> Map.<String, Object>of(
+                                    "session_id", outbound.sessionId(),
+                                    "run_id", prepared.messageId(),
+                                    "reply", outbound.content()
+                            ));
+                })
+                .flatMap(body -> ServerResponse.ok().bodyValue(body))
+                .onErrorResume(this::busyResponse); // CompletableFuture 完成后异步返回，不占用 WebFlux 工作线程
     }
 
     private Mono<ServerResponse> handleChatStream(ServerRequest req) {
@@ -114,6 +143,7 @@ public class ChatRouter {
                     String userId = authenticatedUserId(req, cr.userId());
                     RunMode mode = RunMode.from(cr.mode());
                     String workspace = workspaceResolver.resolveWorkspace(cr.workspace());
+                    String runId = "run_" + UUID.randomUUID();
                     var sessionKey = new SessionKey("http", "default", sessionId);
                     log.info("收到流式消息: sessionId={}, mode={}, workspace={}, message={}",
                             sessionId, mode.value(), workspace, cr.message());
@@ -121,6 +151,7 @@ public class ChatRouter {
                     return Mono.fromCallable(() -> buildMetadata(sessionId, mode, workspace, cr))
                             .subscribeOn(Schedulers.boundedElastic())
                             .flatMap(metadata -> {
+                                metadata.put("run_id", runId);
                                 var events = agentLoop.runStreaming(sessionKey, sessionId, cr.message(), userId,
                                                 metadata)
                                         .map(this::toServerSentEvent);
@@ -129,6 +160,34 @@ public class ChatRouter {
                                         .body(events, ServerSentEvent.class);
                             });
                 });
+    }
+
+    private Mono<ServerResponse> handleRunStatus(ServerRequest req) {
+        String runId = req.pathVariable("runId");
+        String userId = authenticatedUserId(req, null);
+        return Mono.fromCallable(() -> {
+                    var snapshot = runRegistry.get(runId)
+                            .orElseThrow(() -> new ActiveRunRegistry.RunNotFoundException(runId));
+                    if (!snapshot.ownerUserId().isBlank() && !snapshot.ownerUserId().equals(userId)) {
+                        throw new ActiveRunRegistry.RunAccessDeniedException(runId);
+                    }
+                    return snapshot;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(snapshot -> ServerResponse.ok().bodyValue(snapshot.toMap()))
+                .onErrorResume(this::runControlErrorResponse);
+    }
+
+    private Mono<ServerResponse> handleRunInterrupt(ServerRequest req) {
+        String runId = req.pathVariable("runId");
+        String userId = authenticatedUserId(req, null);
+        return req.bodyToMono(InterruptRequest.class)
+                .defaultIfEmpty(new InterruptRequest("user_interrupted"))
+                .flatMap(body -> Mono.fromCallable(() ->
+                                interruptionService.interrupt(runId, userId, body.reason()))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .flatMap(snapshot -> ServerResponse.ok().bodyValue(snapshot.toMap()))
+                .onErrorResume(this::runControlErrorResponse);
     }
 
     private Mono<ServerResponse> handleEvents(ServerRequest req) {
@@ -227,6 +286,46 @@ public class ChatRouter {
      * GET /api/v1/health — 健康检查。
      */
     private Mono<ServerResponse> handleHealth(ServerRequest req) {
-        return ServerResponse.ok().bodyValue(Map.of("status", "ok", "service", "Jarvis"));
+        return ServerResponse.ok().bodyValue(Map.of(
+                "status", "ok",
+                "service", "Jarvis",
+                "concurrency", concurrencyController.snapshot(),
+                "message_bus", Map.of(
+                        "queued", messageBus.queuedCount(),
+                        "pending", messageBus.pendingCount()
+                )
+        ));
     }
+
+    private Mono<ServerResponse> busyResponse(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SystemBusyException) {
+                return ServerResponse.status(429).bodyValue(Map.of(
+                        "error", "system_busy",
+                        "message", current.getMessage()
+                ));
+            }
+            current = current.getCause();
+        }
+        return Mono.error(error);
+    }
+
+    private Mono<ServerResponse> runControlErrorResponse(Throwable error) {
+        if (error instanceof ActiveRunRegistry.RunAccessDeniedException) {
+            return ServerResponse.status(403).bodyValue(Map.of(
+                    "error", "run_access_denied",
+                    "message", error.getMessage()
+            ));
+        }
+        if (error instanceof ActiveRunRegistry.RunNotFoundException) {
+            return ServerResponse.notFound().build();
+        }
+        return Mono.error(error);
+    }
+
+    private record PreparedChat(String messageId, String sessionId, String userId,
+                                String message, Map<String, Object> metadata) {}
+
+    private record InterruptRequest(String reason) {}
 }

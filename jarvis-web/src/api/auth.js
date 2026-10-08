@@ -65,8 +65,29 @@ export function sendChat(token, { sessionId, message, mode, workspace }) {
   });
 }
 
+export function getRunStatus(token, runId) {
+  return request(`/api/v1/chat/runs/${encodeURIComponent(runId)}`, {
+    method: 'GET',
+    token,
+  });
+}
+
+export function interruptRun(token, runId, reason = 'user_interrupted') {
+  return request(`/api/v1/chat/runs/${encodeURIComponent(runId)}/interrupt`, {
+    token,
+    body: { reason },
+  });
+}
+
 export function confirmTool(token, { confirmId }) {
   return request('/api/v1/tools/confirm', {
+    token,
+    body: { confirm_id: confirmId },
+  });
+}
+
+export function rejectTool(token, { confirmId }) {
+  return request('/api/v1/tools/reject', {
     token,
     body: { confirm_id: confirmId },
   });
@@ -181,6 +202,8 @@ export async function streamChat(
     onPlanUpdate,
     onTodoUpdate,
     onProviderEvent,
+    onConnected,
+    onInterrupted,
     onDone,
     signal,
   },
@@ -236,6 +259,10 @@ export async function streamChat(
       onToken?.(data.content || '', data);
       return;
     }
+    if (event === 'connected') {
+      onConnected?.(data);
+      return;
+    }
     if (event === 'reasoning') {
       onReasoning?.(data.content || '', data);
       return;
@@ -263,6 +290,11 @@ export async function streamChat(
     if (event === 'done') {
       finalData = data;
       onDone?.(data);
+      return;
+    }
+    if (event === 'interrupted') {
+      finalData = data;
+      onInterrupted?.(data);
       return;
     }
     if (event === 'error') {

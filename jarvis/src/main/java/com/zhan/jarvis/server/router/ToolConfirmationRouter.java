@@ -1,6 +1,10 @@
 package com.zhan.jarvis.server.router;
 
 import com.zhan.jarvis.agent.AgentLoop;
+import com.zhan.jarvis.agent.control.ActiveRunRegistry;
+import com.zhan.jarvis.agent.control.RunInterruptionService;
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+import com.zhan.jarvis.agent.control.TurnInterruptedException;
 import com.zhan.jarvis.auth.AuthWebFilter;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.config.JarvisConfig;
@@ -36,19 +40,47 @@ public class ToolConfirmationRouter {
     private final ToolPermissionManager permissionManager;
     private final AgentLoop agentLoop;
     private final JarvisConfig config;
+    private final ActiveRunRegistry runRegistry;
+    private final RunInterruptionService interruptionService;
 
     public ToolConfirmationRouter(ToolRegistry toolRegistry, ToolPermissionManager permissionManager,
-                                  AgentLoop agentLoop, JarvisConfig config) {
+                                  AgentLoop agentLoop, JarvisConfig config,
+                                  ActiveRunRegistry runRegistry,
+                                  RunInterruptionService interruptionService) {
         this.toolRegistry = toolRegistry;
         this.permissionManager = permissionManager;
         this.agentLoop = agentLoop;
         this.config = config;
+        this.runRegistry = runRegistry;
+        this.interruptionService = interruptionService;
     }
 
     @Bean
     public RouterFunction<ServerResponse> toolConfirmationRoute() {
         return route(POST("/api/v1/tools/confirm"), this::handleConfirm)
+                .andRoute(POST("/api/v1/tools/reject"), this::handleReject)
                 .andRoute(POST("/api/v1/git/confirm"), this::handleConfirm);
+    }
+
+    private Mono<ServerResponse> handleReject(ServerRequest req) {
+        String userId = authenticatedUserId(req);
+        if (userId.isBlank()) {
+            return ServerResponse.status(HttpStatus.UNAUTHORIZED)
+                    .bodyValue(Map.of("success", false, "msg", "未登录，不能拒绝工具操作"));
+        }
+        return req.bodyToMono(Map.class)
+                .flatMap(body -> Mono.fromCallable(() -> reject(body, userId))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .flatMap(result -> ServerResponse.ok().bodyValue(result))
+                .onErrorResume(HookDecisionException.class, e ->
+                        ServerResponse.status(HttpStatus.FORBIDDEN)
+                                .bodyValue(Map.of("success", false, "msg", e.getMessage())))
+                .onErrorResume(IllegalArgumentException.class, e ->
+                        ServerResponse.status(HttpStatus.BAD_REQUEST)
+                                .bodyValue(Map.of("success", false, "msg", e.getMessage())))
+                .onErrorResume(Exception.class, e ->
+                        ServerResponse.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                                .bodyValue(Map.of("success", false, "msg", e.getMessage())));
     }
 
     private Mono<ServerResponse> handleConfirm(ServerRequest req) {
@@ -79,12 +111,26 @@ public class ToolConfirmationRouter {
             throw new IllegalArgumentException("confirm_id 不能为空");
         }
 
-        PendingToolPermission pending = permissionManager.take(confirmId);
+        PendingToolPermission pending = permissionManager.take(confirmId, userId);
         var metadata = new LinkedHashMap<String, Object>(pending.metadata() == null ? Map.of() : pending.metadata());
         metadata.put(GitPolicyHook.META_HUMAN_CONFIRMED, true);
         metadata.put(ToolPermissionManager.META_CONFIRM_ID, confirmId);
         metadata.put("confirmed_by", userId);
         metadata.put("confirm_source", "http_api");
+
+        String runId = String.valueOf(metadata.getOrDefault("run_id", ""));
+        TurnCancellationToken cancellationToken = TurnCancellationToken.none();
+        if (!runId.isBlank()) {
+            var snapshot = runRegistry.get(runId)
+                    .orElseThrow(() -> new IllegalArgumentException("原 Run 不存在，不能继续确认: " + runId));
+            if (snapshot.status().terminal()) {
+                throw new IllegalArgumentException("原 Run 已结束，不能再次执行确认操作: " + snapshot.status().value());
+            }
+            runRegistry.prepare(runId, pending.sessionId(), pending.requestedBy());
+            cancellationToken = runRegistry.start(runId, pending.sessionId(), pending.requestedBy(),
+                    Thread.currentThread());
+            cancellationToken.throwIfCancellationRequested();
+        }
 
         var ctx = new ToolContext(
                 pending.sessionId() != null ? pending.sessionId() : "tool-confirm:" + confirmId,
@@ -95,19 +141,55 @@ public class ToolConfirmationRouter {
                         ? pending.workspaceDir()
                         : config.agent().workspace(),
                 userId,
-                metadata
+                metadata,
+                runId,
+                cancellationToken
         );
-        //执行工具，获取工具结果
-        String result = toolRegistry.executeTool(pending.toolName(), pending.arguments(), ctx);
-        // 将工具结果回填到agentLoop中
-        String reply = agentLoop.continueAfterToolConfirmation(pending, result, userId);
+        try {
+            // 执行工具，获取工具结果。
+            String result = toolRegistry.executeTool(pending.toolName(), pending.arguments(), ctx);
+            cancellationToken.throwIfCancellationRequested();
+            // 将工具结果回填到 AgentLoop 中。
+            String reply = agentLoop.continueAfterToolConfirmation(pending, result, userId);
+            return Map.of(
+                    "success", true,
+                    "confirm_id", confirmId,
+                    "tool", pending.toolName(),
+                    "summary", pending.summary(),
+                    "result", result,
+                    "reply", reply
+            );
+        } catch (TurnInterruptedException e) {
+            if (!runId.isBlank()) {
+                runRegistry.interrupted(runId, e.getMessage());
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            if (!runId.isBlank()) {
+                runRegistry.fail(runId, e.getMessage());
+            }
+            throw e;
+        }
+    }
+
+    private Map<String, Object> reject(Map<?, ?> body, String userId) {
+        String confirmId = confirmId(body);
+        if (confirmId.isBlank()) {
+            throw new IllegalArgumentException("confirm_id 不能为空");
+        }
+        PendingToolPermission pending = permissionManager.take(confirmId, userId);
+        String runId = pending.metadata() == null
+                ? ""
+                : String.valueOf(pending.metadata().getOrDefault("run_id", ""));
+        if (!runId.isBlank()) {
+            interruptionService.interrupt(runId, userId, "user_rejected_confirmation");
+        }
+        agentLoop.recordToolRejection(pending, userId);
         return Map.of(
                 "success", true,
                 "confirm_id", confirmId,
-                "tool", pending.toolName(),
-                "summary", pending.summary(),
-                "result", result,
-                "reply", reply
+                "run_id", runId,
+                "status", "rejected"
         );
     }
 

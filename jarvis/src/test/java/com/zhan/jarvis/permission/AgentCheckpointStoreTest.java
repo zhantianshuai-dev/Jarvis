@@ -69,6 +69,16 @@ class AgentCheckpointStoreTest {
         assertThat(secondStore.take("confirm_1")).isEmpty();
     }
 
+    @Test
+    void revokeRunRemovesPersistedCheckpoint() {
+        var firstStore = store();
+        firstStore.put(checkpoint("checkpoint_1", "confirm_1", Instant.now().plusSeconds(60)));
+
+        assertThat(firstStore.revokeRun("run_1")).isEqualTo(1);
+        assertThat(firstStore.take("confirm_1")).isEmpty();
+        assertThat(store().take("confirm_1")).isEmpty();
+    }
+
     private AgentCheckpointStore store() {
         return new AgentCheckpointStore(new SessionFileSpaceManager(tempDir.toString()), new ObjectMapper());
     }

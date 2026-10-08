@@ -1,5 +1,6 @@
 package com.zhan.jarvis.bus;
 
+import com.zhan.jarvis.concurrency.SystemBusyException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,14 +19,34 @@ public class MessageBus {
 
     private static final Logger log = LoggerFactory.getLogger(MessageBus.class);
 
-    private final LinkedBlockingQueue<InboundMessage> inbound = new LinkedBlockingQueue<>();
+    private final LinkedBlockingQueue<InboundMessage> inbound;
     private final Map<String, CompletableFuture<OutboundMessage>> pending = new ConcurrentHashMap<>();
+
+    public MessageBus() {
+        this(256);
+    }
+
+    public MessageBus(int capacity) {
+        this.inbound = new LinkedBlockingQueue<>(Math.max(1, capacity));
+    }
 
     /** 提交消息并返回可等待的结果 future。 */
     public CompletableFuture<OutboundMessage> submit(InboundMessage message) {
         var future = new CompletableFuture<OutboundMessage>();
         pending.put(message.id(), future);
-        inbound.offer(message);
+        future.whenComplete((result, error) -> {
+            if (future.isCancelled()) {
+                pending.remove(message.id(), future);
+                inbound.remove(message);
+            }
+        });
+        if (!inbound.offer(message)) {
+            pending.remove(message.id(), future);
+            future.completeExceptionally(new SystemBusyException("消息队列已满，请稍后重试"));
+            log.warn("InboundMessage 被拒绝，消息队列已满: id={}, sessionId={}, queueSize={}",
+                    message.id(), message.sessionId(), inbound.size());
+            return future;
+        }
         log.debug("InboundMessage 已提交: id={}, sessionId={}", message.id(), message.sessionId());
         return future;
     }
@@ -51,12 +72,17 @@ public class MessageBus {
         }
     }
 
-    /** 取消等待中的消息结果；已被 worker 取走的任务仍会继续执行。 */
-    public void cancel(String inboundId) {
+    /**
+     * 取消消息结果；返回 true 表示消息尚在队列中并已被移除。
+     * 已被 worker 取走时由 ActiveRunRegistry 的取消信号负责终止实际执行。
+     */
+    public boolean cancel(String inboundId) {
+        boolean removedFromQueue = inbound.removeIf(message -> message.id().equals(inboundId));
         var future = pending.remove(inboundId);
         if (future != null) {
             future.cancel(false);
         }
+        return removedFromQueue;
     }
 
     /** 等待消息结果。 */
@@ -66,5 +92,19 @@ public class MessageBus {
         } catch (Exception e) {
             throw new RuntimeException("等待 Agent 回复失败", e);
         }
+    }
+
+    public int queuedCount() {
+        return inbound.size();
+    }
+
+    public int pendingCount() {
+        return pending.size();
+    }
+
+    /** 判断消息是否仍等待处理；HTTP 超时或取消后会返回 false。 */
+    public boolean isPending(String inboundId) {
+        var future = pending.get(inboundId);
+        return future != null && !future.isDone();
     }
 }

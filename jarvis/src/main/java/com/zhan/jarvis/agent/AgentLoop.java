@@ -3,6 +3,7 @@ package com.zhan.jarvis.agent;
 import com.zhan.jarvis.bus.InboundMessage;
 import com.zhan.jarvis.channel.SessionKey;
 import com.zhan.jarvis.config.JarvisConfig;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
 import com.zhan.jarvis.hook.HookContext;
 import com.zhan.jarvis.hook.HookManager;
 import com.zhan.jarvis.agent.loop.LoopObserver;
@@ -16,6 +17,9 @@ import com.zhan.jarvis.agent.loop.TokenUsageAccumulator;
 import com.zhan.jarvis.agent.loop.ToolResultStore;
 import com.zhan.jarvis.agent.event.RunEvent;
 import com.zhan.jarvis.agent.event.RunEventStore;
+import com.zhan.jarvis.agent.control.ActiveRunRegistry;
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+import com.zhan.jarvis.agent.control.TurnInterruptedException;
 import com.zhan.jarvis.agent.middleware.AgentMiddlewareChain;
 import com.zhan.jarvis.agent.planner.ExecutionPlan;
 import com.zhan.jarvis.agent.planner.PlanManager;
@@ -55,6 +59,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -86,6 +94,8 @@ public class AgentLoop {
     private final PlanManager planManager;
     private final TodoManager todoManager;
     private final ToolResultStore toolResultStore;
+    private final ConcurrencyController concurrencyController;
+    private final ActiveRunRegistry activeRunRegistry;
 
     public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
                      ToolRegistry toolRegistry, ContextBuilder contextBuilder,
@@ -168,6 +178,33 @@ public class AgentLoop {
                      RunEventStore runEventStore, ArtifactManager artifactManager,
                      Planner planner, PlanManager planManager, TodoManager todoManager,
                      ToolResultStore toolResultStore) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, runEventStore, artifactManager,
+                planner, planManager, todoManager, toolResultStore, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore, ArtifactManager artifactManager,
+                     Planner planner, PlanManager planManager, TodoManager todoManager,
+                     ToolResultStore toolResultStore, ConcurrencyController concurrencyController) {
+        this(agentConfig, llmProvider, toolRegistry, contextBuilder, sessionManager, objectMapper,
+                hookManager, checkpointStore, workspaceResolver, middlewareChain, runEventStore, artifactManager,
+                planner, planManager, todoManager, toolResultStore, concurrencyController, null);
+    }
+
+    public AgentLoop(JarvisConfig.AgentConfig agentConfig, AgentLLMProvider llmProvider,
+                     ToolRegistry toolRegistry, ContextBuilder contextBuilder,
+                     SessionManager sessionManager, ObjectMapper objectMapper,
+                     HookManager hookManager, AgentCheckpointStore checkpointStore,
+                     WorkspaceResolver workspaceResolver, AgentMiddlewareChain middlewareChain,
+                     RunEventStore runEventStore, ArtifactManager artifactManager,
+                     Planner planner, PlanManager planManager, TodoManager todoManager,
+                     ToolResultStore toolResultStore, ConcurrencyController concurrencyController,
+                     ActiveRunRegistry activeRunRegistry) {
         this.agentConfig = agentConfig;
         this.llmProvider = llmProvider;
         this.toolRegistry = toolRegistry;
@@ -185,6 +222,12 @@ public class AgentLoop {
         this.planManager = planManager;
         this.todoManager = todoManager;
         this.toolResultStore = toolResultStore;
+        this.concurrencyController = concurrencyController != null
+                ? concurrencyController
+                : new ConcurrencyController(null);
+        this.activeRunRegistry = activeRunRegistry != null
+                ? activeRunRegistry
+                : ActiveRunRegistry.inMemory();
     }
 
     public String run(String sessionId, String userMessage, String userId) {
@@ -208,6 +251,13 @@ public class AgentLoop {
                                                 String confirmedBy) {
         String sessionId = hasText(pending.sessionId()) ? pending.sessionId() : "tool-confirm:" + pending.confirmId();
         String userId = hasText(pending.requestedBy()) ? pending.requestedBy() : confirmedBy;
+        try (var ignored = concurrencyController.acquireAgent(userId, sessionId)) {
+            return continueAfterToolConfirmationInternal(pending, toolResult, confirmedBy, sessionId, userId);
+        }
+    }
+
+    private String continueAfterToolConfirmationInternal(PendingToolPermission pending, String toolResult,
+                                                          String confirmedBy, String sessionId, String userId) {
         SessionKey sessionKey = pending.sessionKey() != null
                 ? pending.sessionKey()
                 : new SessionKey("http", "tool-confirm", sessionId);
@@ -264,12 +314,31 @@ public class AgentLoop {
         var session = sessionManager.getOrCreate(sessionId, userId);
         var messages = contextBuilder.build(session, continuationMessage, 20,
                 RunMode.from(metadata.get("mode")), workspaceFor(metadata));
-        return runLoop(newState(sessionKey, sessionId, userId, metadata, messages, 0, false,
-                Map.of("continuation", true)), LoopObserver.NOOP).reply();
+        metadata = new LinkedHashMap<>(ensureRunMetadata(metadata));
+        String runId = String.valueOf(metadata.get("run_id"));
+        activeRunRegistry.prepare(runId, sessionId, userId);
+        TurnCancellationToken token = activeRunRegistry.start(runId, sessionId, userId, Thread.currentThread());
+        return runManagedLoop(newState(sessionKey, sessionId, userId, metadata, messages, 0, false,
+                Map.of("continuation", true)), LoopObserver.NOOP, token).reply();
     }
 
     private String runInternal(SessionKey sessionKey, String sessionId, String userMessage,
                                String userId, Map<String, Object> metadata) {
+        Map<String, Object> runMetadata = ensureRunMetadata(metadata);
+        String runId = String.valueOf(runMetadata.get("run_id"));
+        activeRunRegistry.prepare(runId, sessionId, userId);
+        TurnCancellationToken token = activeRunRegistry.start(runId, sessionId, userId, Thread.currentThread());
+        try (var ignored = concurrencyController.acquireAgent(userId, sessionId)) {
+            token.throwIfCancellationRequested();
+            return runInternalWithPermit(sessionKey, sessionId, userMessage, userId, runMetadata, token);
+        } catch (RuntimeException e) {
+            throw finishRunFailure(runId, token, e);
+        }
+    }
+
+    private String runInternalWithPermit(SessionKey sessionKey, String sessionId, String userMessage,
+                                         String userId, Map<String, Object> metadata,
+                                         TurnCancellationToken token) {
         var session = sessionManager.getOrCreate(sessionId, userId);
         var runMode = RunMode.from(metadata == null ? null : metadata.get("mode"));
         String workspace = workspaceFor(metadata);
@@ -290,8 +359,7 @@ public class AgentLoop {
 
         var state = newState(sessionKey, sessionId, userId,
                 withCurrentMessage(metadata, userMessage), messages, 0, false, Map.of());
-        prepareExecutionPlan(state, userMessage, LoopObserver.NOOP);
-        return runLoop(state, LoopObserver.NOOP).reply();
+        return prepareAndRun(state, userMessage, LoopObserver.NOOP, token).reply();
     }
 
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
@@ -302,20 +370,26 @@ public class AgentLoop {
     public Flux<Map<String, Object>> runStreaming(SessionKey sessionKey, String sessionId,
                                                   String userMessage, String userId,
                                                   Map<String, Object> metadata) {
+        Map<String, Object> runMetadata = ensureRunMetadata(metadata);
+        String runId = String.valueOf(runMetadata.get("run_id"));
+        activeRunRegistry.prepare(runId, sessionId, userId);
         return Flux.create(sink -> Thread.startVirtualThread(() ->
-                runStreamingInternal(sessionKey, sessionId, userMessage, userId, metadata, sink)));
+                runStreamingInternal(sessionKey, sessionId, userMessage, userId, runMetadata, sink)));
     }
 
     private void runStreamingInternal(SessionKey sessionKey, String sessionId, String userMessage,
                                       String userId, Map<String, Object> metadata,
                                       FluxSink<Map<String, Object>> sink) {
-        try {
+        String runId = String.valueOf(metadata.get("run_id"));
+        TurnCancellationToken token = activeRunRegistry.start(runId, sessionId, userId, Thread.currentThread());
+        emit(sink, SseEventTypes.CONNECTED, sessionId, "", "chat", Map.of("run_id", runId));
+        try (var ignored = concurrencyController.acquireAgent(userId, sessionId)) {
+            token.throwIfCancellationRequested();
             //构建SSEObserver
             var observer = new SseLoopObserver(sink);
             var session = sessionManager.getOrCreate(sessionId, userId);
             var runMode = RunMode.from(metadata == null ? null : metadata.get("mode"));
             String workspace = workspaceFor(metadata);
-            emit(sink, SseEventTypes.CONNECTED, sessionId, "", "chat", Map.of());
             triggerHook(HookManager.AGENT_PRE_PROCESS, sessionId, userId, Map.of(
                     "message", userMessage,
                     "workspace", workspace,
@@ -335,10 +409,20 @@ public class AgentLoop {
 
             var state = newState(sessionKey, sessionId, userId, withCurrentMessage(metadata, userMessage), messages, 0, true,
                     Map.of("stream", true));
-            prepareExecutionPlan(state, userMessage, observer);
-            runLoop(state, observer);
+            prepareAndRun(state, userMessage, observer, token);
+            sink.complete();
+        } catch (TurnInterruptedException e) {
+            log.info("[AgentLoop] Run 已终止: runId={}, sessionId={}, reason={}", runId, sessionId, e.getMessage());
             sink.complete();
         } catch (Exception e) {
+            if (token.isCancellationRequested()) {
+                activeRunRegistry.interrupted(runId, token.reason());
+                emit(sink, SseEventTypes.INTERRUPTED, sessionId, "已停止当前任务", "chat",
+                        Map.of("run_id", runId, "reason", token.reason()));
+                sink.complete();
+                return;
+            }
+            activeRunRegistry.fail(runId, e.getMessage());
             log.warn("[AgentLoop] stream 执行失败: {}", e.getMessage());
             log.debug("[AgentLoop] stream 执行失败详情", e);
             emit(sink, SseEventTypes.ERROR, sessionId, e.getMessage(), "chat", Map.of());
@@ -355,7 +439,10 @@ public class AgentLoop {
                 "用户已经人工确认并执行了暂停的工具操作。请反思以上工具执行结果。"
                         + "如果任务已完成，请直接回复用户；如果还需要更多操作，继续调用工具。"
         ));
-        return runLoop(new LoopState(
+        activeRunRegistry.prepare(checkpoint.runId(), checkpoint.sessionId(), userId);
+        TurnCancellationToken token = activeRunRegistry.start(checkpoint.runId(), checkpoint.sessionId(), userId,
+                Thread.currentThread());
+        return runManagedLoop(new LoopState(
                 checkpoint.runId(),
                 checkpoint.sessionKey(),
                 checkpoint.sessionId(),
@@ -368,7 +455,7 @@ public class AgentLoop {
                 TokenUsageAccumulator.fromMap(checkpoint.tokenUsage()),
                 RunMode.from(checkpoint.runMode()),
                 new LinkedHashSet<>(checkpoint.activeDeferredTools() == null ? Set.of() : checkpoint.activeDeferredTools())
-        ), LoopObserver.NOOP);
+        ), LoopObserver.NOOP, token);
     }
 
     private void prepareExecutionPlan(LoopState state, String userMessage, LoopObserver observer) {
@@ -422,7 +509,47 @@ public class AgentLoop {
      * 唯一的 Agent 循环实现。
      * 普通 HTTP、SSE、人工确认恢复都通过不同 LoopState/Observer 复用这里。
      */
-    private LoopOutcome runLoop(LoopState state, LoopObserver observer) {
+    private LoopOutcome runManagedLoop(LoopState state, LoopObserver observer, TurnCancellationToken token) {
+        try {
+            return runLoop(state, observer, token);
+        } catch (RuntimeException e) {
+            if (e instanceof TurnInterruptedException || token.isCancellationRequested()) {
+                int iteration = intMetadata(state.outputMetadata().get("current_iteration"));
+                String reason = token.reason().isBlank() ? e.getMessage() : token.reason();
+                finishInterrupted(state, iteration, reason);
+                observer.onInterrupted(state, iteration, reason);
+                throw e instanceof TurnInterruptedException interrupted
+                        ? interrupted : new TurnInterruptedException(reason);
+            }
+            activeRunRegistry.fail(state.runId(), e.getMessage());
+            throw e;
+        }
+    }
+
+    private LoopOutcome prepareAndRun(LoopState state, String userMessage, LoopObserver observer,
+                                      TurnCancellationToken token) {
+        try {
+            token.throwIfCancellationRequested();
+            prepareExecutionPlan(state, userMessage, observer);
+            token.throwIfCancellationRequested();
+            return runManagedLoop(state, observer, token);
+        } catch (RuntimeException e) {
+            boolean cancellation = e instanceof TurnInterruptedException || token.isCancellationRequested();
+            boolean alreadyTerminal = activeRunRegistry.get(state.runId())
+                    .map(snapshot -> snapshot.status().terminal())
+                    .orElse(false);
+            if (cancellation && !alreadyTerminal) {
+                String reason = token.reason().isBlank() ? e.getMessage() : token.reason();
+                finishInterrupted(state, 0, reason);
+                observer.onInterrupted(state, 0, reason);
+                throw e instanceof TurnInterruptedException interrupted
+                        ? interrupted : new TurnInterruptedException(reason);
+            }
+            throw e;
+        }
+    }
+
+    private LoopOutcome runLoop(LoopState state, LoopObserver observer, TurnCancellationToken token) {
         int iteration = state.startIteration();
         int maxIterations = state.runMode().maxIterations(agentConfig.maxIterations());
         // 评测场景独立设置上限，防止 Super Agent 的生产轮数策略放大基准成本。
@@ -440,7 +567,9 @@ public class AgentLoop {
                 "max_iterations", maxIterations
         ));
         while (iteration < maxIterations) {
+            token.throwIfCancellationRequested();
             iteration++;
+            state.outputMetadata().put("current_iteration", iteration);
             log.info("[AgentLoop] 第 {}/{} 轮迭代: sessionId={}, mode={}, stream={}",
                     iteration, maxIterations, state.sessionId(), state.runMode().value(), state.stream());
             recordEvent(state, "iteration.started", "", Map.of("iteration", iteration));
@@ -452,8 +581,9 @@ public class AgentLoop {
             );
             middlewareChain.beforeModel(state, iteration, tools);
             ChatResponse response = state.stream()
-                    ? streamChatResponse(state, tools, observer, iteration)
-                    : llmProvider.chat(state.messages(), tools);
+                    ? streamChatResponse(state, tools, observer, iteration, token)
+                    : llmProvider.chat(state.messages(), tools, token);
+            token.throwIfCancellationRequested();
             middlewareChain.afterModel(state, iteration, response);
             state.tokenUsage().add(response.usage());
             recordEvent(state, "model.completed", response.content(), Map.of(
@@ -492,7 +622,8 @@ public class AgentLoop {
                         toolCallsMetadata(iteration, sanitizedToolCalls));
 
                 var toolResults = executeToolsInParallel(response.toolCalls(), state.sessionKey(),
-                        state.sessionId(), state.userId(), state.metadata());
+                        state.sessionId(), state.userId(), state.metadata(), state.runId(), token);
+                token.throwIfCancellationRequested();
                 logToolResults(toolResults);
 
                 PendingConfirmation pending = findPendingConfirmation(toolResults);
@@ -500,7 +631,8 @@ public class AgentLoop {
                     addToolResults(state, iteration, toolResults, observer, pending);
                     saveCheckpoint(pending, state, iteration);
                     var outcome = finishRequiresConfirmation(state, iteration, pending.reply());
-                    observer.onDone(outcome);
+                    activeRunRegistry.markWaitingConfirmation(state.runId());
+                    observer.onDone(state, outcome);
                     return outcome;
                 }
 
@@ -519,14 +651,37 @@ public class AgentLoop {
             }
             var outcome = finishFinal(state, iteration, finalReply,
                     response.finishReason() != null ? response.finishReason() : "");
-            observer.onDone(outcome);
+            activeRunRegistry.complete(state.runId());
+            observer.onDone(state, outcome);
             return outcome;
         }
 
         String fallback = "达到最大迭代次数（" + maxIterations + "），请简化任务后重试。";
         var outcome = finishMaxIterations(state, fallback);
-        observer.onDone(outcome);
+        activeRunRegistry.complete(state.runId());
+        observer.onDone(state, outcome);
         return outcome;
+    }
+
+    /** 记录用户拒绝人工确认，供会话刷新后恢复确认卡终态。 */
+    public void recordToolRejection(PendingToolPermission pending, String rejectedBy) {
+        if (pending == null || pending.sessionId() == null || pending.sessionId().isBlank()) {
+            return;
+        }
+        var metadata = new LinkedHashMap<String, Object>();
+        metadata.put("source", "Jarvis");
+        metadata.put("trace", true);
+        metadata.put("hidden", true);
+        metadata.put("display_event", false);
+        metadata.put("trace_type", "rejected_tool_result");
+        metadata.put("event_type", "tool_rejected");
+        metadata.put("confirm_id", pending.confirmId());
+        metadata.put("tool_name", pending.toolName());
+        metadata.put("rejected_by", rejectedBy == null ? "" : rejectedBy);
+        if (pending.metadata() != null && pending.metadata().get("run_id") != null) {
+            metadata.put("run_id", String.valueOf(pending.metadata().get("run_id")));
+        }
+        sessionManager.addMessage(pending.sessionId(), "tool", "用户拒绝执行工具操作", metadata);
     }
 
     private boolean shouldContinueForIncompleteTodos(LoopState state, int iteration) {
@@ -590,15 +745,17 @@ public class AgentLoop {
         return sb.toString();
     }
 
-    private ChatResponse streamChatResponse(LoopState state, List<ToolDefinition> tools, LoopObserver observer, int iteration) {
+    private ChatResponse streamChatResponse(LoopState state, List<ToolDefinition> tools, LoopObserver observer,
+                                            int iteration, TurnCancellationToken token) {
         var content = new StringBuilder();
         var reasoning = new StringBuilder();
         var toolBuilders = new TreeMap<Integer, ToolCallBuilder>();
         var finishReason = new AtomicReference<String>();
         var usage = new AtomicReference<>(new ChatResponse.TokenUsage(0, 0, 0));
 
-        llmProvider.streamChat(state.messages(), tools)
+        llmProvider.streamChat(state.messages(), tools, token)
                 .doOnNext(delta -> {
+                    token.throwIfCancellationRequested();
                     if (delta.providerEvent() != null) {
                         var event = delta.providerEvent();
                         observer.onProviderEvent(state, iteration, event.type(), event.message(), event.toMap());
@@ -626,6 +783,7 @@ public class AgentLoop {
                     }
                 })
                 .blockLast(Duration.ofMinutes(5));
+        token.throwIfCancellationRequested();
 
         var toolCalls = toolBuilders.values().stream()
                 .map(ToolCallBuilder::build)
@@ -699,6 +857,7 @@ public class AgentLoop {
                 "display_event", true,
                 "event_type", "confirmation_card",
                 "iteration", iteration,
+                "run_id", state.runId(),
                 "requires_confirmation", true
         )));
         sessionManager.addMessage(state.sessionId(), "assistant", reply, metadata);
@@ -761,6 +920,27 @@ public class AgentLoop {
                 state.tokenUsage().toMap());
     }
 
+    private void finishInterrupted(LoopState state, int iteration, String reason) {
+        String normalizedReason = hasText(reason) ? reason : "user_interrupted";
+        activeRunRegistry.interrupted(state.runId(), normalizedReason);
+        var metadata = withTokenUsage(state, mergedMeta(state, Map.of(
+                "source", "Jarvis",
+                "final", true,
+                "display_event", true,
+                "event_type", "run_interrupted",
+                "iteration", iteration,
+                "finish_reason", "interrupted",
+                "run_id", state.runId(),
+                "reason", normalizedReason
+        )));
+        try {
+            sessionManager.addMessage(state.sessionId(), "assistant", "已停止当前任务", metadata);
+        } catch (RuntimeException e) {
+            log.warn("[AgentLoop] 终止标记写入会话失败: runId={}, error={}", state.runId(), e.getMessage());
+        }
+        recordEvent(state, "run.interrupted", "已停止当前任务", metadata);
+    }
+
     private void addToolResults(LoopState state, int iteration, List<ToolResult> toolResults,
                                 LoopObserver observer, PendingConfirmation pending) {
         for (var result : toolResults) {
@@ -818,55 +998,72 @@ public class AgentLoop {
 
     private List<ToolResult> executeToolsInParallel(List<ToolCall> toolCalls, SessionKey sessionKey,
                                                     String sessionId, String userId,
-                                                    Map<String, Object> metadata) {
+                                                    Map<String, Object> metadata, String runId,
+                                                    TurnCancellationToken token) {
+        token.throwIfCancellationRequested();
         var results = new ArrayList<ToolResult>();
-        var tasks = new ArrayList<Thread>();
-        var callByThread = new java.util.IdentityHashMap<Thread, ToolCall>();
-        var ctx = new ToolContext(sessionId, sessionKey, workspaceFor(metadata), userId, metadata);
+        var executions = new ArrayList<ToolExecution>();
+        var ctx = new ToolContext(sessionId, sessionKey, workspaceFor(metadata), userId, metadata, runId, token);
 
         for (var tc : toolCalls) {
+            var future = new CompletableFuture<ToolResult>();
             var thread = Thread.startVirtualThread(() -> {
                 try {
+                    token.throwIfCancellationRequested();
                     @SuppressWarnings("unchecked")
                     Map<String, Object> args = objectMapper.readValue(tc.arguments(), Map.class);
                     String result = toolRegistry.executeTool(tc.name(), args, ctx);
-                    synchronized (results) {
-                        results.add(new ToolResult(tc.id(), tc.name(), tc.arguments(), result));
-                    }
+                    token.throwIfCancellationRequested();
+                    future.complete(new ToolResult(tc.id(), tc.name(), tc.arguments(), result));
+                } catch (TurnInterruptedException e) {
+                    future.completeExceptionally(e);
                 } catch (Exception e) {
                     log.error("工具执行异常: {} — {}", tc.name(), e.getMessage(), e);
-                    synchronized (results) {
-                        results.add(new ToolResult(tc.id(), tc.name(), tc.arguments(),
-                                "工具执行异常: " + e.getMessage()));
-                    }
+                    future.complete(new ToolResult(tc.id(), tc.name(), tc.arguments(),
+                            "工具执行异常: " + e.getMessage()));
                 }
             });
-            tasks.add(thread);
-            callByThread.put(thread, tc);
+            executions.add(new ToolExecution(tc, thread, future));
         }
 
-        for (var t : tasks) {
-            try {
-                t.join(Duration.ofSeconds(TOOL_EXECUTION_TIMEOUT_SECONDS).toMillis());
-                if (t.isAlive()) {
-                    var tc = callByThread.get(t);
-                    log.warn("工具执行超时: callId={}", tc != null ? tc.id() : "");
-                    synchronized (results) {
-                        results.add(new ToolResult(
-                                tc != null ? tc.id() : "",
-                                tc != null ? tc.name() : "",
-                                tc != null ? tc.arguments() : "{}",
-                                "工具执行超时（" + TOOL_EXECUTION_TIMEOUT_SECONDS + "秒）"
-                        ));
+        AutoCloseable cancellationRegistration = token.onCancel(() ->
+                executions.forEach(execution -> execution.thread().interrupt()));
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TOOL_EXECUTION_TIMEOUT_SECONDS);
+            for (var execution : executions) {
+                token.throwIfCancellationRequested();
+                try {
+                    long remainingNanos = Math.max(0, deadline - System.nanoTime());
+                    results.add(execution.future().get(remainingNanos, TimeUnit.NANOSECONDS));
+                } catch (TimeoutException e) {
+                    execution.thread().interrupt();
+                    var tc = execution.toolCall();
+                    log.warn("工具执行超时: callId={}", tc.id());
+                    results.add(new ToolResult(tc.id(), tc.name(), tc.arguments(),
+                            "工具执行超时（" + TOOL_EXECUTION_TIMEOUT_SECONDS + "秒）"));
+                } catch (InterruptedException e) {
+                    executions.forEach(item -> item.thread().interrupt());
+                    Thread.currentThread().interrupt();
+                    token.throwIfCancellationRequested();
+                    throw new TurnInterruptedException("等待工具执行时被中断");
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    if (cause instanceof TurnInterruptedException interrupted) {
+                        throw interrupted;
                     }
+                    var tc = execution.toolCall();
+                    results.add(new ToolResult(tc.id(), tc.name(), tc.arguments(),
+                            "工具执行异常: " + cause.getMessage()));
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.warn("等待工具线程被中断");
             }
+            token.throwIfCancellationRequested();
+            return results;
+        } finally {
+            closeQuietly(cancellationRegistration);
         }
-        return results;
     }
+
+    private record ToolExecution(ToolCall toolCall, Thread thread, CompletableFuture<ToolResult> future) {}
 
     private void logToolResults(List<ToolResult> toolResults) {
         for (var result : toolResults) {
@@ -945,9 +1142,11 @@ public class AgentLoop {
     private LoopState newState(SessionKey sessionKey, String sessionId, String userId,
                                Map<String, Object> metadata, List<Message> messages,
                                int startIteration, boolean stream, Map<String, Object> outputMetadata) {
-        String runId = "run_" + UUID.randomUUID();
         var safeMetadata = new LinkedHashMap<String, Object>(metadata == null ? Map.of() : metadata);
-        safeMetadata.putIfAbsent("run_id", runId);
+        String runId = hasText(String.valueOf(safeMetadata.getOrDefault("run_id", "")))
+                ? String.valueOf(safeMetadata.get("run_id"))
+                : "run_" + UUID.randomUUID();
+        safeMetadata.put("run_id", runId);
         return new LoopState(
                 runId,
                 sessionKey,
@@ -962,6 +1161,37 @@ public class AgentLoop {
                 RunMode.from(safeMetadata.get("mode")),
                 new LinkedHashSet<>()
         );
+    }
+
+    private Map<String, Object> ensureRunMetadata(Map<String, Object> metadata) {
+        var result = new LinkedHashMap<String, Object>(metadata == null ? Map.of() : metadata);
+        Object existing = result.get("run_id");
+        if (existing == null || String.valueOf(existing).isBlank()) {
+            result.put("run_id", "run_" + UUID.randomUUID());
+        }
+        return result;
+    }
+
+    private RuntimeException finishRunFailure(String runId, TurnCancellationToken token, RuntimeException failure) {
+        if (token.isCancellationRequested() || failure instanceof TurnInterruptedException) {
+            String reason = token.reason().isBlank() ? failure.getMessage() : token.reason();
+            activeRunRegistry.interrupted(runId, reason);
+            return failure instanceof TurnInterruptedException interrupted
+                    ? interrupted : new TurnInterruptedException(reason);
+        }
+        activeRunRegistry.fail(runId, failure.getMessage());
+        return failure;
+    }
+
+    private void closeQuietly(AutoCloseable closeable) {
+        if (closeable == null) {
+            return;
+        }
+        try {
+            closeable.close();
+        } catch (Exception ignored) {
+            // 取消监听器注销失败不影响工具结果收集。
+        }
     }
 
     private Map<String, Object> pendingConfirmationMetadata(PendingConfirmation pending) {

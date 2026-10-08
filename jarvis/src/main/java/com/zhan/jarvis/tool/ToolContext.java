@@ -1,5 +1,6 @@
 package com.zhan.jarvis.tool;
 
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
 import com.zhan.jarvis.channel.SessionKey;
 
 import java.nio.file.Path;
@@ -13,24 +14,36 @@ import java.util.Map;
  * @param workspaceDir Agent 工作目录
  * @param userId       用户标识
  * @param metadata     当前入站消息携带的通道元数据
+ * @param runId        当前 Agent Run ID
+ * @param cancellationToken 当前 Run 的取消信号
  */
 public record ToolContext(
     String sessionId,
     SessionKey sessionKey,
     String workspaceDir,
     String userId,
-    Map<String, Object> metadata
+    Map<String, Object> metadata,
+    String runId,
+    TurnCancellationToken cancellationToken
 ) {
+    public ToolContext(String sessionId, SessionKey sessionKey, String workspaceDir, String userId,
+                       Map<String, Object> metadata) {
+        this(sessionId, sessionKey, workspaceDir, userId, metadata, "", TurnCancellationToken.none());
+    }
+
     public ToolContext(String sessionId, SessionKey sessionKey, String workspaceDir, String userId) {
-        this(sessionId, sessionKey, workspaceDir, userId, Map.of());
+        this(sessionId, sessionKey, workspaceDir, userId, Map.of(), "", TurnCancellationToken.none());
     }
 
     public ToolContext(String sessionId, String workspaceDir, String userId) {
-        this(sessionId, new SessionKey("http", "default", sessionId), workspaceDir, userId, Map.of());
+        this(sessionId, new SessionKey("http", "default", sessionId), workspaceDir, userId,
+                Map.of(), "", TurnCancellationToken.none());
     }
 
     public ToolContext {
         metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+        runId = runId == null ? "" : runId;
+        cancellationToken = cancellationToken == null ? TurnCancellationToken.none() : cancellationToken;
     }
 
     /**

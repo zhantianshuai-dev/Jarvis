@@ -1,5 +1,6 @@
 package com.zhan.jarvis.agent.planner;
 
+import com.zhan.jarvis.concurrency.StripedLock;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import tools.jackson.databind.ObjectMapper;
 
@@ -16,19 +17,26 @@ public class PlanManager {
 
     private final SessionFileSpaceManager fileSpaceManager;
     private final ObjectMapper objectMapper;
+    private final StripedLock sessionLocks = new StripedLock(64);
 
     public PlanManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
         this.fileSpaceManager = fileSpaceManager;
         this.objectMapper = objectMapper;
     }
 
-    public synchronized void save(ExecutionPlan plan) throws IOException {
+    public void save(ExecutionPlan plan) throws IOException {
         if (plan == null || plan.sessionId() == null || plan.sessionId().isBlank()) {
             return;
         }
-        Path file = planFile(plan.sessionId());
-        Files.createDirectories(file.getParent());
-        objectMapper.writeValue(file.toFile(), payload(plan));
+        var lock = sessionLocks.forKey(plan.sessionId());
+        lock.lock();
+        try {
+            Path file = planFile(plan.sessionId());
+            Files.createDirectories(file.getParent());
+            objectMapper.writeValue(file.toFile(), payload(plan));
+        } finally {
+            lock.unlock();
+        }
     }
 
     public Map<String, Object> payload(ExecutionPlan plan) {

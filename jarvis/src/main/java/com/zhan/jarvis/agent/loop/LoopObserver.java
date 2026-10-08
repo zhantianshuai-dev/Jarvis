@@ -32,6 +32,9 @@ public interface LoopObserver {
     default void onPlanUpdate(LoopState state, Map<String, Object> planPayload, Map<String, Object> todoPayload) {
     }
 
-    default void onDone(LoopOutcome outcome) {
+    default void onDone(LoopState state, LoopOutcome outcome) {
+    }
+
+    default void onInterrupted(LoopState state, int iteration, String reason) {
     }
 }

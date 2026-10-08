@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Square,
   Sparkles,
   Palette,
   Terminal,
@@ -42,6 +43,9 @@ import {
   deleteChatSession,
   deleteWorktree,
   getChatSessionMessages,
+  getRunStatus,
+  interruptRun,
+  rejectTool,
   keepWorktree,
   listWorkspaces,
   listWorktrees,
@@ -58,6 +62,7 @@ const TOKEN_KEY = 'jarvis.access_token';
 const USER_KEY = 'jarvis.user';
 const SESSION_KEY = 'jarvis.chat_session_id';
 const WORKSPACE_KEY = 'jarvis.workspace_id';
+const ACTIVE_RUN_KEY_PREFIX = 'jarvis.active_run.';
 const DEEPSEEK_V4_FLASH_CONTEXT_WINDOW = 1_048_576;
 const JARVIS_ICON = '/favicon.svg';
 const RUN_MODES = [
@@ -75,6 +80,10 @@ function createClientId(prefix = 'msg') {
     return globalThis.crypto.randomUUID();
   }
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function activeRunStorageKey(sessionId) {
+  return `${ACTIVE_RUN_KEY_PREFIX}${sessionId}`;
 }
 
 function readStoredSession() {
@@ -160,6 +169,7 @@ function extractToolConfirmation(content, data = {}) {
   }
   return {
     confirmId,
+    runId: data.run_id || data.runId || '',
     tool: data.tool || content.match(/工具:\s*([^\n]+)/)?.[1]?.trim() || 'tool',
     action: data.action || content.match(/操作:\s*([^\n]+)/)?.[1]?.trim() || 'confirm',
     command: formatConfirmationCommand(data.command || content.match(/命令:\s*([^\n]+)/)?.[1]?.trim() || ''),
@@ -367,7 +377,7 @@ function normalizeChatMessages(items = [], confirmationStates = {}) {
         createdAt: item.createdAt,
         tokenUsage: item.role === 'assistant' ? normalizeContextUsage(item) : null,
         confirmation: confirmation && confirmedState
-          ? { ...confirmation, ...confirmedState, status: 'confirmed' }
+          ? { ...confirmation, ...confirmedState, status: confirmedState.status || 'confirmed' }
           : confirmation,
       };
     });
@@ -407,6 +417,12 @@ function subagentStatusContent(status, task, result, error) {
   if (status === 'failed') {
     return `子 Agent 执行失败${task ? `：${task}` : ''}${error ? `\n\n${error}` : ''}`;
   }
+  if (status === 'cancelled') {
+    return `子 Agent 已停止${task ? `：${task}` : ''}${error ? `\n\n${error}` : ''}`;
+  }
+  if (status === 'timed_out') {
+    return `子 Agent 执行超时${task ? `：${task}` : ''}${error ? `\n\n${error}` : ''}`;
+  }
   return `子 Agent 状态更新${task ? `：${task}` : ''}`;
 }
 
@@ -444,13 +460,16 @@ function normalizeSubagentStatus(data = {}) {
 function normalizeStoredSubagentStatus(item = {}) {
   const content = item.content || '';
   const taskId = item.task_id || item.taskId || content.match(/任务 ID:\s*([^\n]+)/)?.[1]?.trim() || '';
-  const status = item.status || (content.includes('执行失败') ? 'failed' : 'completed');
+  const status = item.status || (content.includes('执行超时')
+    ? 'timed_out'
+    : content.includes('已停止') ? 'cancelled'
+      : content.includes('执行失败') ? 'failed' : 'completed');
   const task = item.task || content.match(/任务:\s*([^\n]+)/)?.[1]?.trim() || '';
   const result = status === 'completed'
     ? content.split(/\n结果:\n/).slice(1).join('\n结果:\n').trim()
     : '';
-  const error = status === 'failed'
-    ? item.error || content.match(/错误:\s*([\s\S]+)$/)?.[1]?.trim() || ''
+  const error = ['failed', 'cancelled', 'timed_out'].includes(status)
+    ? item.error || content.match(/(?:错误|原因):\s*([\s\S]+)$/)?.[1]?.trim() || ''
     : '';
   return {
     ...normalizeSubagentStatus({
@@ -512,12 +531,23 @@ function subagentStatusFromToolResult(data = {}) {
   if (!taskId) {
     return null;
   }
+  const status = content.includes('执行超时')
+    ? 'timed_out'
+    : content.includes('执行成功') ? 'completed'
+      : content.includes('执行失败') ? 'failed'
+        : content.includes('已停止') ? 'cancelled' : 'running';
   return {
     task_id: taskId,
-    status: 'running',
+    status,
     task: content.match(/任务:\s*([^\n]+)/)?.[1]?.trim() || '',
     worktree: content.match(/worktree:\s*([^\n]+)/)?.[1]?.trim() || '',
     worktree_path: content.match(/worktree_path:\s*([^\n]+)/)?.[1]?.trim() || '',
+    result: status === 'completed'
+      ? content.split(/\n结果:\n/).slice(1).join('\n结果:\n').trim()
+      : '',
+    error: ['failed', 'cancelled', 'timed_out'].includes(status)
+      ? content.match(/(?:错误|原因):\s*([\s\S]+)$/)?.[1]?.trim() || ''
+      : '',
   };
 }
 
@@ -566,6 +596,9 @@ export default function App() {
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [chatError, setChatError] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
+  const [activeRunId, setActiveRunId] = useState('');
+  const [runStopping, setRunStopping] = useState(false);
+  const [detachedRun, setDetachedRun] = useState(false);
   const [runMode, setRunMode] = useState('agent');
   const [runModeOpen, setRunModeOpen] = useState(false);
   const [workspaces, setWorkspaces] = useState([]);
@@ -582,6 +615,7 @@ export default function App() {
   const runModeRef = useRef(null);
   const workspaceRef = useRef(null);
   const attachmentInputRef = useRef(null);
+  const streamAbortRef = useRef(null);
   const selectedWorkspaceItem = useMemo(
     () => workspaces.find((item) => item.id === selectedWorkspace) || null,
     [selectedWorkspace, workspaces],
@@ -717,6 +751,41 @@ export default function App() {
   }, [authState, session?.token, activeView]);
 
   useEffect(() => {
+    if (!detachedRun || !activeRunId || !session?.token || !sessionId) {
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const run = await getRunStatus(session.token, activeRunId);
+        if (cancelled) return;
+        if (['completed', 'interrupted', 'failed'].includes(run.status)) {
+          localStorage.removeItem(activeRunStorageKey(sessionId));
+          setActiveRunId('');
+          setDetachedRun(false);
+          setRunStopping(false);
+          setChatBusy(false);
+          await loadConversation(session.token, sessionId);
+        }
+      } catch (err) {
+        if (!cancelled && err.status === 404) {
+          localStorage.removeItem(activeRunStorageKey(sessionId));
+          setActiveRunId('');
+          setDetachedRun(false);
+          setRunStopping(false);
+          setChatBusy(false);
+        }
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [detachedRun, activeRunId, session?.token, sessionId]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('jarvis.theme', theme);
   }, [theme]);
@@ -757,6 +826,26 @@ export default function App() {
         session_id: result.sessionId || nextSessionId,
       });
       setMessages(currentTodo ? [...normalized, currentTodo] : normalized);
+      const storedRunId = localStorage.getItem(activeRunStorageKey(result.sessionId || nextSessionId));
+      if (storedRunId) {
+        try {
+          const run = await getRunStatus(token, storedRunId);
+          if (run.status === 'waiting_confirmation') {
+            localStorage.removeItem(activeRunStorageKey(result.sessionId || nextSessionId));
+            setActiveRunId('');
+            setDetachedRun(false);
+            setChatBusy(false);
+          } else if (!['completed', 'interrupted', 'failed'].includes(run.status)) {
+            setActiveRunId(storedRunId);
+            setDetachedRun(true);
+            setChatBusy(true);
+          } else {
+            localStorage.removeItem(activeRunStorageKey(result.sessionId || nextSessionId));
+          }
+        } catch {
+          localStorage.removeItem(activeRunStorageKey(result.sessionId || nextSessionId));
+        }
+      }
       return true;
     } catch (err) {
       setChatError(err.message || '加载历史会话失败');
@@ -861,6 +950,8 @@ export default function App() {
     const content = draft.trim() || (pendingAttachments.length ? '请分析这张图片。' : '');
     if ((!content && pendingAttachments.length === 0) || chatBusy) return;
     setChatBusy(true);
+    setRunStopping(false);
+    setDetachedRun(false);
     setChatError('');
 
     let activeSessionId = sessionId;
@@ -909,6 +1000,10 @@ export default function App() {
     });
     setDraft('');
     setPendingAttachments([]);
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
+    let streamedRunId = '';
+    let keepDetachedRun = false;
     try {
       await streamChat(session.token, {
         sessionId: activeSessionId,
@@ -916,6 +1011,14 @@ export default function App() {
         mode: runMode,
         workspace: selectedWorkspace,
         attachments: uploadedAttachments,
+        signal: abortController.signal,
+        onConnected: (data) => {
+          const runId = data.run_id || data.runId || '';
+          if (!runId) return;
+          streamedRunId = runId;
+          setActiveRunId(runId);
+          localStorage.setItem(activeRunStorageKey(activeSessionId), runId);
+        },
         onToken: (token) => {
           if (!token) return;
           setMessages((current) =>
@@ -927,6 +1030,9 @@ export default function App() {
           );
         },
         onDone: (data) => {
+          localStorage.removeItem(activeRunStorageKey(activeSessionId));
+          setActiveRunId('');
+          setRunStopping(false);
           if (!data?.content) return;
           const tokenUsage = normalizeContextUsage(data);
           setMessages((current) =>
@@ -941,6 +1047,20 @@ export default function App() {
                 : message,
             ),
           );
+        },
+        onInterrupted: (data) => {
+          localStorage.removeItem(activeRunStorageKey(activeSessionId));
+          setActiveRunId('');
+          setRunStopping(false);
+          setMessages((current) => current.map((message) => (
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: message.content || data.content || '已停止当前任务',
+                  interrupted: true,
+                }
+              : message
+          )));
         },
         onToolResult: (data) => {
           const status = subagentStatusFromToolResult(data);
@@ -966,6 +1086,9 @@ export default function App() {
         },
       });
     } catch (err) {
+      if (err.name === 'AbortError') {
+        return;
+      }
       if (err.status === 401) {
         clearStoredSession();
         localStorage.removeItem(SESSION_KEY);
@@ -973,18 +1096,44 @@ export default function App() {
         setSessionId('');
         setConversations([]);
         setAuthState('anonymous');
+      } else if (streamedRunId) {
+        // 网络中断不代表服务端 Run 已停止，保留控制句柄并转为状态轮询。
+        keepDetachedRun = true;
+        setActiveRunId(streamedRunId);
+        setDetachedRun(true);
       }
       setMessages((current) => current.filter((message) => message.id !== assistantId || message.content));
       setChatError(err.message || '发送失败');
     } finally {
-      setChatBusy(false);
+      streamAbortRef.current = null;
+      setChatBusy(keepDetachedRun);
       refreshConversationList(session.token).catch(() => {});
     }
   }
 
-  async function handleToolConfirm(messageId, confirmId) {
+  async function handleStopRun() {
+    if (!activeRunId || runStopping || !session?.token) return;
+    setRunStopping(true);
+    setChatError('');
+    try {
+      await interruptRun(session.token, activeRunId);
+    } catch (err) {
+      setRunStopping(false);
+      setChatError(err.message || '停止任务失败');
+    }
+  }
+
+  async function handleToolConfirm(messageId, confirmation) {
+    const confirmId = confirmation?.confirmId;
     if (!confirmId || chatBusy) return;
     setChatError('');
+    setChatBusy(true);
+    const runId = confirmation?.runId || '';
+    let keepDetachedRun = false;
+    if (runId) {
+      setActiveRunId(runId);
+      localStorage.setItem(activeRunStorageKey(sessionId), runId);
+    }
     setMessages((current) =>
       current.map((message) =>
         message.id === messageId && message.confirmation
@@ -1029,20 +1178,58 @@ export default function App() {
                   error: err.message || '确认失败',
                 },
               }
+          : message,
+        ),
+      );
+      if (runId && err.status !== 401) {
+        try {
+          const run = await getRunStatus(session.token, runId);
+          if (run.status === 'waiting_confirmation') {
+            setActiveRunId('');
+            localStorage.removeItem(activeRunStorageKey(sessionId));
+          } else if (!['completed', 'interrupted', 'failed'].includes(run.status)) {
+            keepDetachedRun = true;
+            setDetachedRun(true);
+          }
+        } catch {
+          // 无法确认服务端是否仍在执行时，保留停止入口，避免产生失控后台任务。
+          keepDetachedRun = true;
+          setDetachedRun(true);
+        }
+      }
+    } finally {
+      setChatBusy(keepDetachedRun);
+      setRunStopping(false);
+      if (!keepDetachedRun) {
+        setActiveRunId('');
+        localStorage.removeItem(activeRunStorageKey(sessionId));
+      }
+    }
+  }
+
+  async function rejectToolConfirmation(messageId, confirmId) {
+    if (!confirmId || chatBusy) return;
+    setChatError('');
+    try {
+      await rejectTool(session.token, { confirmId });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.confirmation
+            ? { ...message, confirmation: { ...message.confirmation, status: 'rejected', error: '' } }
+            : message,
+        ),
+      );
+      setActiveRunId('');
+      localStorage.removeItem(activeRunStorageKey(sessionId));
+    } catch (err) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.confirmation
+            ? { ...message, confirmation: { ...message.confirmation, error: err.message || '拒绝失败' } }
             : message,
         ),
       );
     }
-  }
-
-  function rejectToolConfirmation(messageId) {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === messageId && message.confirmation
-          ? { ...message, confirmation: { ...message.confirmation, status: 'rejected', error: '' } }
-          : message,
-      ),
-    );
   }
 
   function upsertSubagentStatus(data) {
@@ -1499,6 +1686,10 @@ export default function App() {
                                 ? '子 Agent 执行成功'
                                 : message.subagent?.status === 'failed'
                                   ? '子 Agent 执行失败'
+                                : message.subagent?.status === 'cancelled'
+                                    ? '子 Agent 已停止'
+                                    : message.subagent?.status === 'timed_out'
+                                      ? '子 Agent 执行超时'
                                   : '子 Agent 正在运行'}
                             </span>
                           </div>
@@ -1514,7 +1705,7 @@ export default function App() {
                               <MarkdownMessage content={message.subagent.result} />
                             </details>
                           )}
-                          {message.subagent?.status === 'failed' && message.subagent?.error && (
+                          {['failed', 'cancelled', 'timed_out'].includes(message.subagent?.status) && message.subagent?.error && (
                             <div className="subagent-error">{message.subagent.error}</div>
                           )}
                         </div>
@@ -1522,8 +1713,8 @@ export default function App() {
                         <ToolConfirmationCard
                           confirmation={message.confirmation}
                           chatBusy={chatBusy}
-                          onConfirm={() => handleToolConfirm(message.id, message.confirmation.confirmId)}
-                          onReject={() => rejectToolConfirmation(message.id)}
+                          onConfirm={() => handleToolConfirm(message.id, message.confirmation)}
+                          onReject={() => rejectToolConfirmation(message.id, message.confirmation.confirmId)}
                         />
                       ) : message.content || message.providerEvents?.length ? (
                         <>
@@ -1540,6 +1731,7 @@ export default function App() {
                         <MessageAttachmentList attachments={message.attachments || []} />
                       </>
                     )}
+                    {message.interrupted && <div className="run-interrupted">已停止</div>}
                   </div>
                 </article>
               ))
@@ -1686,9 +1878,22 @@ export default function App() {
                       <button className="composer-tool soft" type="button" aria-label="语音输入">
                         <Mic size={21} />
                       </button>
-                      <button className="send-button" type="submit" disabled={(!draft.trim() && pendingAttachments.length === 0) || chatBusy}>
-                        <ArrowUp size={20} />
-                      </button>
+                      {chatBusy ? (
+                        <button
+                          className="send-button stop-button"
+                          type="button"
+                          aria-label={runStopping ? '正在停止' : '停止生成'}
+                          title={runStopping ? '正在停止' : '停止生成'}
+                          disabled={!activeRunId || runStopping}
+                          onClick={handleStopRun}
+                        >
+                          <Square size={15} fill="currentColor" />
+                        </button>
+                      ) : (
+                        <button className="send-button" type="submit" disabled={!draft.trim() && pendingAttachments.length === 0}>
+                          <ArrowUp size={20} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </form>

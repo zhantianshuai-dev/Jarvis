@@ -12,6 +12,7 @@ public record JarvisConfig(
     LLMConfig llm,
     MemoryServiceConfig memoryService,
     AgentConfig agent,
+    SubagentConfig subagent,
     PlannerConfig planner,
     AuthConfig auth,
     McpConfig mcp,
@@ -19,6 +20,7 @@ public record JarvisConfig(
     ImageGenConfig imageGen,
     VisionConfig vision,
     SandboxConfig sandbox,
+    ConcurrencyConfig concurrency,
     HeartbeatConfig heartbeat,
     CronConfig cron
 ) {
@@ -85,6 +87,11 @@ public record JarvisConfig(
             int keepRecentMessages
         ) {}
     }
+
+    /** 子 Agent 生命周期配置 */
+    public record SubagentConfig(
+        long maxRuntimeSeconds
+    ) {}
 
     /** Agent 任务规划配置 */
     public record PlannerConfig(
@@ -161,7 +168,36 @@ public record JarvisConfig(
         String backend,
         String baseUrl,
         String hostRoot,
-        String sandboxRoot
+        String sandboxRoot,
+        OsSandboxConfig os
+    ) {
+        /** macOS 原生 Seatbelt 沙箱配置 */
+        public record OsSandboxConfig(
+            String mode,
+            boolean networkAccess,
+            boolean allowTempWrite,
+            int timeoutSeconds,
+            int maxOutputChars
+        ) {}
+    }
+
+    /** 单实例并发与背压配置 */
+    public record ConcurrencyConfig(
+        boolean enabled,
+        int maxConcurrentAgents,
+        int maxConcurrentAgentsPerUser,
+        int maxQueuedAgents,
+        int maxQueuedAgentsPerUser,
+        int maxQueuedAgentsPerSession,
+        int messageQueueCapacity,
+        int maxConcurrentLlmCalls,
+        int maxConcurrentMemoryCalls,
+        int maxConcurrentTools,
+        int maxConcurrentToolsPerSession,
+        int maxConcurrentSubagents,
+        int maxConcurrentSubagentsPerSession,
+        int maxConcurrentAsyncHooks,
+        long acquireTimeoutMs
     ) {}
 
     /** Heartbeat 自主唤醒配置 */

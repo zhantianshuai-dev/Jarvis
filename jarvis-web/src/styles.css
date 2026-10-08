@@ -944,6 +944,14 @@ button {
   background: #b42318;
 }
 
+.subagent-status.cancelled .subagent-dot {
+  background: #8a8a8a;
+}
+
+.subagent-status.timed_out .subagent-dot {
+  background: #d97706;
+}
+
 .subagent-task {
   color: #2f2f2f;
 }
@@ -1728,6 +1736,21 @@ button {
   background: #dddddf;
   color: #ffffff;
   cursor: not-allowed;
+}
+
+.send-button.stop-button {
+  background: #202123;
+}
+
+.send-button.stop-button svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 1.5;
+}
+
+.run-interrupted {
+  color: #8a8a8a;
+  font-size: 12px;
 }
 
 .composer-note {

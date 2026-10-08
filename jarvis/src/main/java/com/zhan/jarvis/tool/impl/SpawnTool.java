@@ -66,7 +66,8 @@ public class SpawnTool implements McpTool {
         boolean waitForCompletion = boolArg(arguments, "wait_for_completion", true);
         long timeoutSeconds = longArg(arguments, "timeout_seconds", 300, 10, 300);
         var handle = subagentManager.spawn(task, ctx.sessionId(), ctx.sessionKey(), ctx.userId(),
-                ctx.metadata(), createWorktree, worktree, !waitForCompletion);
+                ctx.metadata(), createWorktree, worktree, !waitForCompletion,
+                ctx.runId(), ctx.cancellationToken());
         if (!handle.started()) {
             return "子 Agent 启动失败，任务 ID: " + handle.taskId() + "\n原因: " + handle.error();
         }
@@ -91,10 +92,19 @@ public class SpawnTool implements McpTool {
         if ("failed".equals(result.status())) {
             var latest = subagentManager.getResult(handle.taskId());
             if (latest != null && "running".equals(latest.status())) {
-                sb.append("等待子 Agent 超时（").append(timeoutSeconds).append(" 秒），任务仍在后台运行。完成后结果将通过状态事件返回。");
+                sb.append("等待子 Agent 超时（").append(timeoutSeconds)
+                        .append(" 秒），任务仍在后台运行。完成后结果将通过状态事件和会话消息返回。");
                 return sb.toString();
             }
             sb.append("子 Agent 执行失败。\n\n错误: ").append(safe(result.error()));
+            return sb.toString();
+        }
+        if ("timed_out".equals(result.status())) {
+            sb.append("子 Agent 执行超时，已请求终止。\n\n错误: ").append(safe(result.error()));
+            return sb.toString();
+        }
+        if ("cancelled".equals(result.status())) {
+            sb.append("子 Agent 已停止。\n\n原因: ").append(safe(result.error()));
             return sb.toString();
         }
 

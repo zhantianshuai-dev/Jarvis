@@ -105,6 +105,11 @@ jarvis:
       当前时间: {now}
       工作目录: {workspace}
 
+  # ---- 子 Agent 生命周期 ----
+  subagent:
+    # 全生命周期硬超时；不同于 spawn 的等待超时，到期会真正取消子 Agent。
+    max-runtime-seconds: ${JARVIS_SUBAGENT_MAX_RUNTIME_SECONDS:600}
+
   # ---- Planner 任务拆解与编排 ----
   planner:
     enabled: ${JARVIS_PLANNER_ENABLED:true}
@@ -159,10 +164,34 @@ jarvis:
 
   # ---- 工具执行沙箱 ----
   sandbox:
-    backend: ${JARVIS_SANDBOX_BACKEND:direct}
+    backend: ${JARVIS_SANDBOX_BACKEND:os}
     base-url: ${JARVIS_SANDBOX_BASE_URL:http://localhost:8090}
     host-root: ${JARVIS_SANDBOX_HOST_ROOT:${JARVIS_PROJECT_WORKSPACE:.}}
     sandbox-root: ${JARVIS_SANDBOX_ROOT:/workspace}
+    os:
+      mode: ${JARVIS_OS_SANDBOX_MODE:workspace-write}
+      network-access: ${JARVIS_OS_SANDBOX_NETWORK_ACCESS:false}
+      allow-temp-write: ${JARVIS_OS_SANDBOX_ALLOW_TEMP_WRITE:true}
+      timeout-seconds: ${JARVIS_OS_SANDBOX_TIMEOUT_SECONDS:60}
+      max-output-chars: ${JARVIS_OS_SANDBOX_MAX_OUTPUT_CHARS:100000}
+
+  # ---- 单实例并发治理与背压 ----
+  concurrency:
+    enabled: ${JARVIS_CONCURRENCY_ENABLED:true}
+    max-concurrent-agents: ${JARVIS_MAX_CONCURRENT_AGENTS:8}
+    max-concurrent-agents-per-user: ${JARVIS_MAX_CONCURRENT_AGENTS_PER_USER:2}
+    max-queued-agents: ${JARVIS_MAX_QUEUED_AGENTS:128}
+    max-queued-agents-per-user: ${JARVIS_MAX_QUEUED_AGENTS_PER_USER:16}
+    max-queued-agents-per-session: ${JARVIS_MAX_QUEUED_AGENTS_PER_SESSION:8}
+    message-queue-capacity: ${JARVIS_MESSAGE_QUEUE_CAPACITY:256}
+    max-concurrent-llm-calls: ${JARVIS_MAX_CONCURRENT_LLM_CALLS:8}
+    max-concurrent-memory-calls: ${JARVIS_MAX_CONCURRENT_MEMORY_CALLS:16}
+    max-concurrent-tools: ${JARVIS_MAX_CONCURRENT_TOOLS:16}
+    max-concurrent-tools-per-session: ${JARVIS_MAX_CONCURRENT_TOOLS_PER_SESSION:4}
+    max-concurrent-subagents: ${JARVIS_MAX_CONCURRENT_SUBAGENTS:8}
+    max-concurrent-subagents-per-session: ${JARVIS_MAX_CONCURRENT_SUBAGENTS_PER_SESSION:3}
+    max-concurrent-async-hooks: ${JARVIS_MAX_CONCURRENT_ASYNC_HOOKS:32}
+    acquire-timeout-ms: ${JARVIS_CONCURRENCY_ACQUIRE_TIMEOUT_MS:30000}
 
   # ---- Heartbeat 自主唤醒 ----
   heartbeat:

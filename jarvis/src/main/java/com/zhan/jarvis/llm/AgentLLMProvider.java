@@ -1,5 +1,7 @@
 package com.zhan.jarvis.llm;
 
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+
 import java.util.List;
 import reactor.core.publisher.Flux;
 
@@ -21,7 +23,34 @@ public interface AgentLLMProvider {
     ChatResponse chat(List<Message> messages, List<ToolDefinition> tools);
 
     /**
+     * 带 Run 取消信号的同步调用。旧实现无需立即改造也能获得调用前后的取消检查。
+     */
+    default ChatResponse chat(List<Message> messages, List<ToolDefinition> tools,
+                              TurnCancellationToken cancellationToken) {
+        TurnCancellationToken token = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
+        token.throwIfCancellationRequested();
+        ChatResponse response = chat(messages, tools);
+        token.throwIfCancellationRequested();
+        return response;
+    }
+
+    /**
      * 使用 OpenAI 兼容 SSE 响应进行流式对话。
      */
     Flux<ChatStreamDelta> streamChat(List<Message> messages, List<ToolDefinition> tools);
+
+    /**
+     * 带 Run 取消信号的流式调用。具体 Provider 可覆盖此方法并主动取消底层 HTTP 订阅。
+     */
+    default Flux<ChatStreamDelta> streamChat(List<Message> messages, List<ToolDefinition> tools,
+                                             TurnCancellationToken cancellationToken) {
+        TurnCancellationToken token = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
+        return Flux.defer(() -> {
+            token.throwIfCancellationRequested();
+            return streamChat(messages, tools)
+                    .doOnNext(ignored -> token.throwIfCancellationRequested());
+        });
+    }
 }

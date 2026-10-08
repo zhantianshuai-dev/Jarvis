@@ -1,6 +1,7 @@
 package com.zhan.jarvis.artifact;
 
 import cn.hutool.core.util.IdUtil;
+import com.zhan.jarvis.concurrency.StripedLock;
 import com.zhan.jarvis.session.SessionFileSpaceManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,7 @@ public class ArtifactManager {
 
     private final SessionFileSpaceManager fileSpaceManager;
     private final ObjectMapper objectMapper;
+    private final StripedLock sessionLocks = new StripedLock(64);
 
     public ArtifactManager(SessionFileSpaceManager fileSpaceManager, ObjectMapper objectMapper) {
         this.fileSpaceManager = fileSpaceManager;
@@ -48,9 +50,9 @@ public class ArtifactManager {
                 "output", source == null || source.isBlank() ? "agent" : source, summary, metadata);
     }
 
-    public synchronized ArtifactRecord register(String sessionId, String userId, String name, String path,
-                                                String contentType, long size, String kind, String source,
-                                                String summary, Map<String, Object> metadata) {
+    public ArtifactRecord register(String sessionId, String userId, String name, String path,
+                                   String contentType, long size, String kind, String source,
+                                   String summary, Map<String, Object> metadata) {
         String artifactId = "art_" + IdUtil.fastSimpleUUID();
         var record = new ArtifactRecord(
                 artifactId,
@@ -66,7 +68,13 @@ public class ArtifactManager {
                 metadata == null ? Map.of() : new LinkedHashMap<>(metadata),
                 Instant.now()
         );
-        save(record);
+        var lock = sessionLocks.forKey(sessionId);
+        lock.lock();
+        try {
+            save(record);
+        } finally {
+            lock.unlock();
+        }
         return record;
     }
 

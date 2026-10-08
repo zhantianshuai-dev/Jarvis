@@ -1,6 +1,7 @@
 package com.zhan.jarvis.tool;
 
 import com.zhan.jarvis.agent.RunMode;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
 import com.zhan.jarvis.hook.HookContext;
 import com.zhan.jarvis.hook.HookDecisionException;
 import com.zhan.jarvis.hook.HookManager;
@@ -34,23 +35,33 @@ public class ToolRegistry {
     private final ToolPermissionManager permissionManager;
     private final ObjectMapper objectMapper;
     private final ToolPayloadSanitizer toolPayloadSanitizer;
+    private final ConcurrencyController concurrencyController;
 
     public ToolRegistry(LocalMcpServer localServer, List<McpClient> externalClients) {
-        this(localServer, externalClients, null, null, null);
+        this(localServer, externalClients, null, null, null, null);
     }
 
     public ToolRegistry(LocalMcpServer localServer, List<McpClient> externalClients, HookManager hookManager) {
-        this(localServer, externalClients, hookManager, null, null);
+        this(localServer, externalClients, hookManager, null, null, null);
     }
 
     public ToolRegistry(LocalMcpServer localServer, List<McpClient> externalClients, HookManager hookManager,
                         ToolPermissionManager permissionManager, ObjectMapper objectMapper) {
+        this(localServer, externalClients, hookManager, permissionManager, objectMapper, null);
+    }
+
+    public ToolRegistry(LocalMcpServer localServer, List<McpClient> externalClients, HookManager hookManager,
+                        ToolPermissionManager permissionManager, ObjectMapper objectMapper,
+                        ConcurrencyController concurrencyController) {
         this.localServer = localServer;
         this.externalClients = externalClients != null ? externalClients : List.of();
         this.hookManager = hookManager;
         this.permissionManager = permissionManager;
         this.objectMapper = objectMapper;
         this.toolPayloadSanitizer = objectMapper != null ? new ToolPayloadSanitizer(objectMapper) : null;
+        this.concurrencyController = concurrencyController != null
+                ? concurrencyController
+                : new ConcurrencyController(null);
         log.info("ToolRegistry 初始化: {} 个本地工具, {} 个外部 MCP Client",
                 localServer.toolCount(), this.externalClients.size());
     }
@@ -150,6 +161,7 @@ public class ToolRegistry {
      * @return 执行结果
      */
     public String executeTool(String name, Map<String, Object> arguments, ToolContext ctx) {
+        ctx.cancellationToken().throwIfCancellationRequested();
         //这里触发工具事件
         var prePayload = new java.util.LinkedHashMap<String, Object>();
         prePayload.put("tool_name", name);
@@ -158,11 +170,13 @@ public class ToolRegistry {
         prePayload.put("metadata", ctx.metadata() == null ? Map.of() : ctx.metadata());
         //触发Hook
         triggerPolicyHook(HookManager.TOOL_PRE_CALL, ctx, prePayload);
+        ctx.cancellationToken().throwIfCancellationRequested();
 
         long start = System.currentTimeMillis();
         try {
             //这里触发人工确认校验
             ToolPermissionDecision decision = evaluatePermission(name, arguments, ctx);
+            ctx.cancellationToken().throwIfCancellationRequested();
             if (decision.behavior() == ToolPermissionDecision.Behavior.DENY) {
                 throw new HookDecisionException("Tool permission denied: " + decision.reason());
             }
@@ -180,18 +194,21 @@ public class ToolRegistry {
             }
 
             String result;
-            // 本地工具优先
-            if (TOOL_SEARCH.equals(name)) {
-                result = executeToolSearch(arguments);
-            } else if (localServer.hasTool(name)) {
-                result = localServer.callTool(name, arguments, ctx);
-            } else {
-                result = null;
-                // 外部 MCP 工具
-                for (var client : externalClients) {
-                    if (client.isAvailable() && client.hasTool(name)) {
-                        result = client.callTool(name, arguments, ctx);
-                        break;
+            try (var ignored = concurrencyController.acquireTool(name, ctx.sessionId())) {
+                ctx.cancellationToken().throwIfCancellationRequested();
+                // 本地工具优先
+                if (TOOL_SEARCH.equals(name)) {
+                    result = executeToolSearch(arguments);
+                } else if (localServer.hasTool(name)) {
+                    result = localServer.callTool(name, arguments, ctx);
+                } else {
+                    result = null;
+                    // 外部 MCP 工具
+                    for (var client : externalClients) {
+                        if (client.isAvailable() && client.hasTool(name)) {
+                            result = client.callTool(name, arguments, ctx);
+                            break;
+                        }
                     }
                 }
             }
@@ -199,6 +216,7 @@ public class ToolRegistry {
             if (result == null) {
                 throw new IllegalArgumentException("未找到工具: " + name);
             }
+            ctx.cancellationToken().throwIfCancellationRequested();
             //工具执行成功后触发事件
             triggerHook(HookManager.TOOL_POST_CALL, ctx, Map.of(
                     "tool_name", name,

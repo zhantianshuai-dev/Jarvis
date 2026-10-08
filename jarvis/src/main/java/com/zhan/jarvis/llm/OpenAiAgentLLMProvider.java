@@ -1,6 +1,10 @@
 package com.zhan.jarvis.llm;
 
+import com.zhan.jarvis.agent.control.TurnCancellationToken;
+import com.zhan.jarvis.agent.control.TurnInterruptedException;
 import com.zhan.jarvis.config.JarvisConfig;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
+import com.zhan.jarvis.concurrency.SystemBusyException;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -15,6 +19,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 
 /**
  * OpenAI 兼容的 Agent LLM 服务提供商，支持工具调用往返。
@@ -37,11 +42,20 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
     private final boolean circuitBreakerEnabled;
     private final int circuitFailureThreshold;
     private final Duration circuitRecoveryTimeout;
+    private final ConcurrencyController concurrencyController;
 
     public OpenAiAgentLLMProvider(JarvisConfig.LLMConfig config, ObjectMapper objectMapper,
                                    WebClient.Builder builder) {
+        this(config, objectMapper, builder, null);
+    }
+
+    public OpenAiAgentLLMProvider(JarvisConfig.LLMConfig config, ObjectMapper objectMapper,
+                                   WebClient.Builder builder, ConcurrencyController concurrencyController) {
         this.config = config;
         this.objectMapper = objectMapper;
+        this.concurrencyController = concurrencyController != null
+                ? concurrencyController
+                : new ConcurrencyController(null);
         this.endpoints = buildEndpoints(config, builder);
         var retry = config.retry();
         this.maxRetries = retry != null ? Math.max(0, retry.maxRetries()) : 3;
@@ -60,9 +74,18 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
 
     @Override
     public ChatResponse chat(List<Message> messages, List<ToolDefinition> tools) {
+        return chat(messages, tools, TurnCancellationToken.none());
+    }
+
+    @Override
+    public ChatResponse chat(List<Message> messages, List<ToolDefinition> tools,
+                             TurnCancellationToken cancellationToken) {
+        TurnCancellationToken token = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
         var errors = new ArrayList<String>();
 
         for (var endpoint : endpoints) {
+            token.throwIfCancellationRequested();
             if (isCircuitOpen(endpoint)) {
                 String error = endpoint.provider() + "(circuit_open)";
                 errors.add(error);
@@ -72,6 +95,7 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
             }
 
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                token.throwIfCancellationRequested();
                 var body = buildRequestBody(endpoint, messages, tools, false);
                 log.debug("LLM 请求: provider={}, attempt={}/{}, {} 条消息, {} 个工具, 模型={}",
                         endpoint.provider(), attempt + 1, maxRetries + 1, messages.size(),
@@ -79,30 +103,40 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                 logRequestBody(endpoint, body, false);
 
                 try {
-                    String raw = endpoint.webClient().post()
-                            .uri("/v1/chat/completions")
-                            .bodyValue(body)
-                            .retrieve()
-                            .onStatus(status -> status.isError(), response ->
-                                    response.bodyToMono(String.class)
-                                            .defaultIfEmpty("")
-                                            .map(errorBody -> {
-                                                log.error("LLM API 错误: provider={}, status={}, body={}",
-                                                        endpoint.provider(), response.statusCode(), errorBody);
-                                                return new LlmProviderException(endpoint.provider(),
-                                                        response.statusCode().value(), errorBody);
-                                            }))
-                            .bodyToMono(String.class)
-                            .block(Duration.ofMinutes(5));
+                    String raw;
+                    try (var ignored = concurrencyController.acquireLlm()) {
+                        raw = endpoint.webClient().post()
+                                .uri("/v1/chat/completions")
+                                .bodyValue(body)
+                                .retrieve()
+                                .onStatus(status -> status.isError(), response ->
+                                        response.bodyToMono(String.class)
+                                                .defaultIfEmpty("")
+                                                .map(errorBody -> {
+                                                    log.error("LLM API 错误: provider={}, status={}, body={}",
+                                                            endpoint.provider(), response.statusCode(), errorBody);
+                                                    return new LlmProviderException(endpoint.provider(),
+                                                            response.statusCode().value(), errorBody);
+                                                }))
+                                .bodyToMono(String.class)
+                                .block(Duration.ofMinutes(5));
+                    }
 
                     endpoint.circuit().recordSuccess();
+                    token.throwIfCancellationRequested();
                     return parseResponse(endpoint, raw);
                 } catch (Exception e) {
+                    if (isCancellation(e, token)) {
+                        throw interrupted(token, e);
+                    }
+                    if (isSystemBusy(e)) {
+                        throw asSystemBusy(e);
+                    }
                     String error = summarizeError(endpoint, e);
                     errors.add(error);
                     log.warn("LLM provider 调用失败: {}, attempt={}/{}", error, attempt + 1, maxRetries + 1);
                     if (attempt < maxRetries && isRetryable(e)) {
-                        sleepBeforeRetry(attempt);
+                        sleepBeforeRetry(attempt, token);
                         continue;
                     }
                     if (isRetryable(e)) {
@@ -121,11 +155,21 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
 
     @Override
     public Flux<ChatStreamDelta> streamChat(List<Message> messages, List<ToolDefinition> tools) {
-        return streamWithFallback(0, messages, tools, new ArrayList<>());
+        return streamChat(messages, tools, TurnCancellationToken.none());
+    }
+
+    @Override
+    public Flux<ChatStreamDelta> streamChat(List<Message> messages, List<ToolDefinition> tools,
+                                            TurnCancellationToken cancellationToken) {
+        TurnCancellationToken token = cancellationToken == null
+                ? TurnCancellationToken.none() : cancellationToken;
+        return cancelOnSignal(streamWithFallback(0, messages, tools, new ArrayList<>(), token), token);
     }
 
     private Flux<ChatStreamDelta> streamWithFallback(int endpointIndex, List<Message> messages,
-                                                     List<ToolDefinition> tools, List<String> errors) {
+                                                     List<ToolDefinition> tools, List<String> errors,
+                                                     TurnCancellationToken token) {
+        token.throwIfCancellationRequested();
         if (endpointIndex >= endpoints.size()) {
             String message = buildAllProvidersFailedMessage(errors);
             log.error(message);
@@ -142,13 +186,19 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
             return Flux.concat(
                     Flux.just(ChatStreamDelta.providerEvent(
                             LlmProviderEvent.circuitOpen(endpoint.provider(), next, endpoint.circuit().remainingOpenMs()))),
-                    streamWithFallback(endpointIndex + 1, messages, tools, errors)
+                    streamWithFallback(endpointIndex + 1, messages, tools, errors, token)
             );
         }
 
-        return streamEndpointAttempt(endpoint, messages, tools, 0)
+        return streamEndpointAttempt(endpoint, messages, tools, 0, token)
                 .doOnComplete(() -> endpoint.circuit().recordSuccess())
                 .onErrorResume(e -> {
+                    if (isCancellation(e, token)) {
+                        return Flux.error(interrupted(token, e));
+                    }
+                    if (isSystemBusy(e)) {
+                        return Flux.error(asSystemBusy(e));
+                    }
                     String error = summarizeError(endpoint, e);
                     errors.add(error);
                     if (isRetryable(e)) {
@@ -159,15 +209,22 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                     return Flux.concat(
                             Flux.just(ChatStreamDelta.providerEvent(
                                     LlmProviderEvent.fallback(endpoint.provider(), next, error))),
-                            streamWithFallback(endpointIndex + 1, messages, tools, errors)
+                            streamWithFallback(endpointIndex + 1, messages, tools, errors, token)
                     );
                 });
     }
 
     private Flux<ChatStreamDelta> streamEndpointAttempt(LlmEndpoint endpoint, List<Message> messages,
-                                                        List<ToolDefinition> tools, int attempt) {
-        return Flux.defer(() -> streamOnce(endpoint, messages, tools))
+                                                        List<ToolDefinition> tools, int attempt,
+                                                        TurnCancellationToken token) {
+        return Flux.defer(() -> {
+                    token.throwIfCancellationRequested();
+                    return streamOnce(endpoint, messages, tools);
+                })
                 .onErrorResume(e -> {
+                    if (isCancellation(e, token)) {
+                        return Flux.error(interrupted(token, e));
+                    }
                     if (attempt < maxRetries && isRetryable(e)) {
                         long waitMs = retryDelayMs(attempt);
                         String reason = summarizeError(endpoint, e);
@@ -177,11 +234,33 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                                 Flux.just(ChatStreamDelta.providerEvent(
                                         LlmProviderEvent.retry(endpoint.provider(), attempt + 1, maxRetries, waitMs, reason))),
                                 Mono.delay(Duration.ofMillis(waitMs))
-                                        .thenMany(streamEndpointAttempt(endpoint, messages, tools, attempt + 1))
+                                        .thenMany(streamEndpointAttempt(endpoint, messages, tools, attempt + 1, token))
                         );
                     }
                     return Flux.error(e);
                 });
+    }
+
+    private static boolean isSystemBusy(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SystemBusyException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static SystemBusyException asSystemBusy(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SystemBusyException busy) {
+                return busy;
+            }
+            current = current.getCause();
+        }
+        return new SystemBusyException("LLM 并发数已达上限，请稍后重试", error);
     }
 
     /*
@@ -193,24 +272,28 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
                 tools != null ? tools.size() : 0, endpoint.model());
         logRequestBody(endpoint, body, true);
 
-        return endpoint.webClient().post()
-                .uri("/v1/chat/completions")
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .bodyValue(body)
-                .retrieve()
-                .onStatus(status -> status.isError(), response ->
-                        response.bodyToMono(String.class)
-                                .defaultIfEmpty("")
-                                .map(errorBody -> {
-                                    log.error("LLM stream API 错误: provider={}, status={}, body={}",
-                                            endpoint.provider(), response.statusCode(), errorBody);
-                                    return new LlmProviderException(endpoint.provider(),
-                                            response.statusCode().value(), errorBody);
-                                }))
-                .bodyToFlux(SSE_TYPE)
-                .map(ServerSentEvent::data)
-                .filter(data -> data != null && !data.isBlank())
-                .map(this::parseStreamData);
+        return Flux.using(
+                concurrencyController::acquireLlm,
+                ignored -> endpoint.webClient().post()
+                        .uri("/v1/chat/completions")
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .bodyValue(body)
+                        .retrieve()
+                        .onStatus(status -> status.isError(), response ->
+                                response.bodyToMono(String.class)
+                                        .defaultIfEmpty("")
+                                        .map(errorBody -> {
+                                            log.error("LLM stream API 错误: provider={}, status={}, body={}",
+                                                    endpoint.provider(), response.statusCode(), errorBody);
+                                            return new LlmProviderException(endpoint.provider(),
+                                                    response.statusCode().value(), errorBody);
+                                        }))
+                        .bodyToFlux(SSE_TYPE)
+                        .map(ServerSentEvent::data)
+                        .filter(data -> data != null && !data.isBlank())
+                        .map(this::parseStreamData),
+                ConcurrencyController.Permit::close
+        );
     }
 
     private ObjectNode buildRequestBody(LlmEndpoint endpoint, List<Message> messages, List<ToolDefinition> tools,
@@ -433,13 +516,52 @@ public class OpenAiAgentLLMProvider implements AgentLLMProvider {
         return true;
     }
 
-    private void sleepBeforeRetry(int attempt) {
+    private void sleepBeforeRetry(int attempt, TurnCancellationToken token) {
         long delay = retryDelayMs(attempt);
         try {
             Thread.sleep(delay);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            if (token.isCancellationRequested()) {
+                token.throwIfCancellationRequested();
+            }
         }
+        token.throwIfCancellationRequested();
+    }
+
+    static <T> Flux<T> cancelOnSignal(Flux<T> source, TurnCancellationToken token) {
+        return Flux.defer(() -> {
+            token.throwIfCancellationRequested();
+            // 每轮流式请求都会订阅同一个 Run 取消信号。竞争分支落败时不能反向取消共享 Future，
+            // 否则第一轮正常结束后，第二轮会立刻收到 CancellationException。
+            Flux<T> cancellation = Mono.fromFuture(
+                            token.cancelled().toCompletableFuture(), true)
+                    .then(Mono.<T>error(new TurnInterruptedException(token.reason())))
+                    .flux();
+            return Flux.firstWithSignal(source, cancellation);
+        });
+    }
+
+    private static boolean isCancellation(Throwable error, TurnCancellationToken token) {
+        if (token.isCancellationRequested()) {
+            return true;
+        }
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof TurnInterruptedException || current instanceof CancellationException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static TurnInterruptedException interrupted(TurnCancellationToken token, Throwable cause) {
+        if (cause instanceof TurnInterruptedException interrupted) {
+            return interrupted;
+        }
+        String reason = token.reason().isBlank() ? "LLM 调用已取消" : token.reason();
+        return new TurnInterruptedException(reason, cause);
     }
 
     private long retryDelayMs(int attempt) {

@@ -2,8 +2,11 @@ package com.zhan.jarvis.config;
 
 import com.zhan.jarvis.agent.AgentLoop;
 import com.zhan.jarvis.agent.ContextBuilder;
+import com.zhan.jarvis.agent.control.ActiveRunRegistry;
+import com.zhan.jarvis.agent.control.RunInterruptionService;
 import com.zhan.jarvis.bus.AgentMessageWorker;
 import com.zhan.jarvis.bus.MessageBus;
+import com.zhan.jarvis.concurrency.ConcurrencyController;
 import com.zhan.jarvis.channel.ChannelManager;
 import com.zhan.jarvis.channel.FeishuChannel;
 import com.zhan.jarvis.channel.HttpChannel;
@@ -30,6 +33,7 @@ import com.zhan.jarvis.permission.ToolPermissionManager;
 import com.zhan.jarvis.permission.AgentCheckpointStore;
 import com.zhan.jarvis.sandbox.DirectBackend;
 import com.zhan.jarvis.sandbox.HttpSandboxBackend;
+import com.zhan.jarvis.sandbox.OsSandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxBackend;
 import com.zhan.jarvis.sandbox.SandboxManager;
 import com.zhan.jarvis.server.sse.SseEventHub;
@@ -84,19 +88,26 @@ public class AppConfig {
     // ---- 1.2 Agent LLM 服务提供商 ----
 
     @Bean
+    public ConcurrencyController concurrencyController(JarvisConfig config) {
+        return new ConcurrencyController(config.concurrency());
+    }
+
+    @Bean
     public static AgentLLMProvider agentLLMProvider(JarvisConfig config, ObjectMapper objectMapper,
-                                                     WebClient.Builder builder) {
+                                                     WebClient.Builder builder,
+                                                     ConcurrencyController concurrencyController) {
         var llmConfig = effectiveLlmConfig(config);
         log.info("创建 AgentLLMProvider: model={}", llmConfig.model());
-        return new OpenAiAgentLLMProvider(llmConfig, objectMapper, builder);
+        return new OpenAiAgentLLMProvider(llmConfig, objectMapper, builder, concurrencyController);
     }
 
     // ---- 1.5 记忆服务客户端 ----
 
     @Bean
     public static MemoryServiceClient memoryServiceClient(JarvisConfig config, WebClient.Builder builder,
-                                                           ObjectMapper objectMapper) {
-        return new MemoryServiceClient(config.memoryService(), builder, objectMapper);
+                                                           ObjectMapper objectMapper,
+                                                           ConcurrencyController concurrencyController) {
+        return new MemoryServiceClient(config.memoryService(), builder, objectMapper, concurrencyController);
     }
 
     // ---- 图片生成客户端 ----
@@ -154,8 +165,8 @@ public class AppConfig {
     // ---- 2.5 Hook 系统 ----
 
     @Bean
-    public HookManager hookManager() {
-        var manager = new HookManager();
+    public HookManager hookManager(ConcurrencyController concurrencyController) {
+        var manager = new HookManager(concurrencyController);
         manager.register(HookManager.AGENT_PRE_PROCESS, new AgentTraceHook());
         manager.register(HookManager.AGENT_POST_PROCESS, new AgentTraceHook());
         manager.register(HookManager.TOOL_PRE_CALL, new ExecSafetyHook());
@@ -170,8 +181,8 @@ public class AppConfig {
     @Bean
     public SandboxBackend sandboxBackend(JarvisConfig config, WebClient.Builder builder) {
         var sandbox = config.sandbox();
-        String backend = sandbox == null || sandbox.backend() == null ? "direct" : sandbox.backend().trim();
-        if ("http".equalsIgnoreCase(backend)) {
+        String backend = sandbox == null || sandbox.backend() == null ? "os" : sandbox.backend().trim();
+        if ("http".equalsIgnoreCase(backend) || "docker".equalsIgnoreCase(backend)) {
             String hostRoot = sandbox.hostRoot() == null || sandbox.hostRoot().isBlank()
                     ? config.agent().workspace()
                     : sandbox.hostRoot();
@@ -182,8 +193,24 @@ public class AppConfig {
                     sandbox.baseUrl(), hostRoot, sandboxRoot);
             return new HttpSandboxBackend(builder, sandbox.baseUrl(), hostRoot, sandboxRoot);
         }
-        log.info("创建 Direct SandboxBackend");
-        return new DirectBackend();
+        if ("os".equalsIgnoreCase(backend) || "seatbelt".equalsIgnoreCase(backend)) {
+            var os = sandbox == null ? null : sandbox.os();
+            String mode = os == null || os.mode() == null || os.mode().isBlank()
+                    ? "workspace-write" : os.mode();
+            boolean networkAccess = os != null && os.networkAccess();
+            boolean allowTempWrite = os == null || os.allowTempWrite();
+            int timeoutSeconds = os == null ? 60 : os.timeoutSeconds();
+            int maxOutputChars = os == null ? 100_000 : os.maxOutputChars();
+            log.info("创建 OS SandboxBackend: type=macOS Seatbelt, mode={}, networkAccess={}, allowTempWrite={}",
+                    mode, networkAccess, allowTempWrite);
+            return new OsSandboxBackend(mode, networkAccess, allowTempWrite, timeoutSeconds, maxOutputChars);
+        }
+        if ("direct".equalsIgnoreCase(backend)) {
+            log.warn("创建 Direct SandboxBackend，该模式不提供操作系统级隔离");
+            return new DirectBackend();
+        }
+        throw new IllegalArgumentException("不支持的 sandbox backend: " + backend
+                + "，可选值为 direct、http/docker、os/seatbelt");
     }
 
     @Bean
@@ -242,9 +269,10 @@ public class AppConfig {
     @Bean
     public ToolRegistry toolRegistry(LocalMcpServer localServer, JarvisConfig config,
                                       ObjectMapper objectMapper, WebClient.Builder builder,
-                                      HookManager hookManager, ToolPermissionManager permissionManager) {
+                                      HookManager hookManager, ToolPermissionManager permissionManager,
+                                      ConcurrencyController concurrencyController) {
         return new ToolRegistry(localServer, createExternalMcpClients(config, objectMapper, builder), hookManager,
-                permissionManager, objectMapper);
+                permissionManager, objectMapper, concurrencyController);
     }
 
     // ---- 1.9 子 Agent 管理器 ----
@@ -253,10 +281,14 @@ public class AppConfig {
     public SubagentManager subagentManager(ToolRegistry toolRegistry, AgentLLMProvider llmProvider,
                                             MemoryServiceClient memoryClient, ObjectMapper objectMapper,
                                             WorktreeManager worktreeManager, TaskManager taskManager,
-                                            SseEventHub sseEventHub, JarvisConfig config) {
-        log.info("创建 SubagentManager");
+                                            SseEventHub sseEventHub, JarvisConfig config,
+                                            ConcurrencyController concurrencyController) {
+        long maxRuntimeSeconds = config.subagent() != null && config.subagent().maxRuntimeSeconds() > 0
+                ? config.subagent().maxRuntimeSeconds() : 600;
+        log.info("创建 SubagentManager: maxRuntimeSeconds={}", maxRuntimeSeconds);
         return new SubagentManager(toolRegistry, llmProvider, memoryClient, objectMapper,
-                worktreeManager, taskManager, sseEventHub, config.agent().workspace());
+                worktreeManager, taskManager, sseEventHub, config.agent().workspace(), concurrencyController,
+                maxRuntimeSeconds);
     }
 
     /**
@@ -304,6 +336,20 @@ public class AppConfig {
     }
 
     @Bean
+    public ActiveRunRegistry activeRunRegistry(JarvisConfig config, ObjectMapper objectMapper) {
+        return new ActiveRunRegistry(Path.of(config.agent().workspace()), objectMapper);
+    }
+
+    @Bean
+    public RunInterruptionService runInterruptionService(ActiveRunRegistry runRegistry, MessageBus messageBus,
+                                                          AgentCheckpointStore checkpointStore,
+                                                          ToolPermissionManager permissionManager,
+                                                          SubagentManager subagentManager) {
+        return new RunInterruptionService(runRegistry, messageBus, checkpointStore, permissionManager,
+                subagentManager);
+    }
+
+    @Bean
     public AgentLoop agentLoop(JarvisConfig config, AgentLLMProvider llmProvider,
                                 ToolRegistry toolRegistry, ContextBuilder contextBuilder,
                                 SessionManager sessionManager, ObjectMapper objectMapper,
@@ -315,24 +361,38 @@ public class AppConfig {
                                 Planner planner,
                                 PlanManager planManager,
                                 TodoManager todoManager,
-                                ToolResultStore toolResultStore) {
+                                ToolResultStore toolResultStore,
+                                ConcurrencyController concurrencyController,
+                                ActiveRunRegistry activeRunRegistry) {
         log.info("创建 AgentLoop: maxIterations={}", config.agent().maxIterations());
         return new AgentLoop(config.agent(), llmProvider, toolRegistry, contextBuilder,
                 sessionManager, objectMapper, hookManager, checkpointStore, workspaceResolver, middlewareChain,
-                runEventStore, artifactManager, planner, planManager, todoManager, toolResultStore);
+                runEventStore, artifactManager, planner, planManager, todoManager, toolResultStore,
+                concurrencyController, activeRunRegistry);
     }
 
     // ---- 2.6 消息总线解耦 ----
 
     @Bean
-    public MessageBus messageBus() {
-        return new MessageBus();
+    public MessageBus messageBus(JarvisConfig config) {
+        var concurrency = config.concurrency();
+        int capacity = concurrency != null && concurrency.messageQueueCapacity() > 0
+                ? concurrency.messageQueueCapacity() : 256;
+        return new MessageBus(capacity);
     }
     // 这里会自动注入 IoC 容器中的消息总线。
-    @Bean
+    @Bean(destroyMethod = "stop")
     public AgentMessageWorker agentMessageWorker(MessageBus messageBus, AgentLoop agentLoop,
-                                                 ChannelManager channelManager) {
-        var worker = new AgentMessageWorker(messageBus, agentLoop, channelManager);
+                                                 ChannelManager channelManager, JarvisConfig config) {
+        var concurrency = config.concurrency();
+        int maxPending = concurrency != null && concurrency.maxQueuedAgents() > 0
+                ? concurrency.maxQueuedAgents() : 128;
+        int maxPendingPerUser = concurrency != null && concurrency.maxQueuedAgentsPerUser() > 0
+                ? concurrency.maxQueuedAgentsPerUser() : 16;
+        int maxPendingPerSession = concurrency != null && concurrency.maxQueuedAgentsPerSession() > 0
+                ? concurrency.maxQueuedAgentsPerSession() : 8;
+        var worker = new AgentMessageWorker(messageBus, agentLoop, channelManager,
+                maxPending, maxPendingPerUser, maxPendingPerSession);
         worker.start();  // 直接启动循环，不断从消息队列中取任务。
         return worker;
     }

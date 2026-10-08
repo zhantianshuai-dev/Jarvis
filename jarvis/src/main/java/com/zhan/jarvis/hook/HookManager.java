@@ -1,5 +1,6 @@
 package com.zhan.jarvis.hook;
 
+import com.zhan.jarvis.concurrency.ConcurrencyController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +22,15 @@ public class HookManager {
     private static final Logger log = LoggerFactory.getLogger(HookManager.class);
 
     private final Map<String, CopyOnWriteArrayList<Hook>> hooks = new ConcurrentHashMap<>();
+    private final ConcurrencyController concurrencyController;
+
+    public HookManager() {
+        this(null);
+    }
+
+    public HookManager(ConcurrencyController concurrencyController) {
+        this.concurrencyController = concurrencyController;
+    }
 
     /** 注册一个钩子到指定事件。 */
     public void register(String eventType, Hook hook) {
@@ -37,7 +47,7 @@ public class HookManager {
 
         for (var hook : eventHooks) {
             if (hook.async()) {
-                Thread.startVirtualThread(() -> executeHook(hook, ctx));
+                executeAsync(hook, ctx);
             } else {
                 executeHook(hook, ctx);
             }
@@ -56,7 +66,7 @@ public class HookManager {
 
         for (var hook : eventHooks) {
             if (hook.async()) {
-                Thread.startVirtualThread(() -> executeHook(hook, ctx));
+                executeAsync(hook, ctx);
                 continue;
             }
             HookResult result = evaluateHook(hook, ctx);
@@ -64,6 +74,34 @@ public class HookManager {
                 throw new HookDecisionException("Hook " + hook.name() + " denied "
                         + ctx.eventType() + ": " + result.reason());
             }
+        }
+    }
+
+    private void executeAsync(Hook hook, HookContext ctx) {
+        ConcurrencyController.Permit permit = concurrencyController != null
+                ? concurrencyController.tryAcquireAsyncHook()
+                : null;
+        if (concurrencyController != null && permit == null) {
+            log.warn("异步 Hook 并发数已达上限，丢弃旁路事件: eventType={}, hook={}",
+                    ctx.eventType(), hook.name());
+            return;
+        }
+        try {
+            Thread.startVirtualThread(() -> {
+                try {
+                    executeHook(hook, ctx);
+                } finally {
+                    if (permit != null) {
+                        permit.close();
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            if (permit != null) {
+                permit.close();
+            }
+            log.warn("异步 Hook 启动失败: eventType={}, hook={}, error={}",
+                    ctx.eventType(), hook.name(), e.getMessage());
         }
     }
 
